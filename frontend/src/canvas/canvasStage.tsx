@@ -28,6 +28,14 @@ import {
   fetchCostMap,
   type SamPoint,
 } from "../api/select";
+import {
+  generate,
+  runToCompletion,
+  maskToPngDataUrl,
+  resultToImage,
+  b64ToFile,
+} from "../api/generate";
+import { COLOR_GENERATION } from "../constants";
 
 type Tool = "select" | "lasso" | "pen" | "hand";
 type LassoMode = "free" | "poly" | "magnetic";
@@ -74,6 +82,11 @@ export function CanvasStage() {
   const [penSel, setPenSel] = useState(-1);
   const penDrag = useRef<{ kind: "anchor" | "in" | "out" | "new"; index: number } | null>(null);
   const penOp = useRef<BoolOp>("replace");
+
+  // generation
+  const [prompt, setPrompt] = useState("");
+  const [genStatus, setGenStatus] = useState<"idle" | "busy" | "polling" | "done" | "failed">("idle");
+  const [history, setHistory] = useState<{ url: string; prompt: string }[]>([]);
 
   // gesture refs (avoid re-renders mid-drag)
   const drag = useRef<{ start: Pt; startT: ViewTransform; pan: boolean; moved: boolean; down: Pt } | null>(null);
@@ -545,6 +558,38 @@ export function CanvasStage() {
     setMask(next);
   };
 
+  // crop -> (mock model) -> feathered composite; result becomes the new base image.
+  const generateNow = async () => {
+    if (!imageId || !mask || mask.isEmpty()) return;
+    const maskPng = maskToPngDataUrl(mask.data, mask.width, mask.height);
+    setGenStatus("busy");
+    try {
+      const job = await generate(imageId, maskPng, prompt, { mock: true });
+      const done = await runToCompletion(job, (s) =>
+        setGenStatus(s === "polling" ? "polling" : "busy")
+      );
+      if (done.status === "completed" && done.result_png) {
+        const im = await resultToImage(done.result_png);
+        setImg(im);
+        setHistory((h) =>
+          [{ url: `data:image/png;base64,${done.result_png}`, prompt }, ...h].slice(0, 12)
+        );
+        // re-upload so further edits compound on this result
+        const r = await loadImageToSidecar(await b64ToFile(done.result_png));
+        setImageId(r.id);
+        setBackend(r.backend);
+        setMask(new MaskBuffer(im.naturalWidth, im.naturalHeight));
+        setSamPoints([]);
+        setGenStatus("done");
+      } else {
+        setGenStatus("failed");
+      }
+    } catch (e) {
+      console.error("generate failed:", e);
+      setGenStatus("failed");
+    }
+  };
+
   const cursorStyle = !img
     ? "default"
     : panning
@@ -732,6 +777,113 @@ export function CanvasStage() {
           </Layer>
         </Stage>
       </div>
+
+      <GenerateBar
+        prompt={prompt}
+        onPrompt={setPrompt}
+        status={genStatus}
+        canGenerate={!!imageId && !!mask && !mask.isEmpty() && genStatus !== "busy" && genStatus !== "polling"}
+        onGenerate={generateNow}
+        history={history}
+        onPick={(url) => resultToImage(url).then(setImg)}
+      />
+    </div>
+  );
+}
+
+function GenerateBar({
+  prompt,
+  onPrompt,
+  status,
+  canGenerate,
+  onGenerate,
+  history,
+  onPick,
+}: {
+  prompt: string;
+  onPrompt: (v: string) => void;
+  status: "idle" | "busy" | "polling" | "done" | "failed";
+  canGenerate: boolean;
+  onGenerate: () => void;
+  history: { url: string; prompt: string }[];
+  onPick: (url: string) => void;
+}) {
+  const A = COLOR_GENERATION;
+  const chip =
+    status === "polling"
+      ? { c: "#eab308", t: "polling…" }
+      : status === "busy"
+      ? { c: "#eab308", t: "working…" }
+      : status === "done"
+      ? { c: "#22c55e", t: "done" }
+      : status === "failed"
+      ? { c: "#ef4444", t: "failed" }
+      : null;
+  return (
+    <div
+      style={{
+        borderTop: `1px solid ${A}33`,
+        background: "#15120b",
+        padding: "8px 10px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ width: 8, height: 8, borderRadius: 2, background: A, boxShadow: `0 0 6px ${A}` }} />
+        <input
+          value={prompt}
+          onChange={(e) => onPrompt(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && canGenerate && onGenerate()}
+          placeholder="Describe the edit for the selection (e.g. make the jacket red leather)…"
+          style={{
+            flex: 1,
+            background: "#0d0f12",
+            color: "#e2e8f0",
+            border: "1px solid #2a2f37",
+            borderRadius: 6,
+            padding: "8px 10px",
+            fontSize: 13,
+          }}
+        />
+        <button
+          onClick={onGenerate}
+          disabled={!canGenerate}
+          style={{
+            padding: "8px 16px",
+            borderRadius: 6,
+            border: "none",
+            cursor: canGenerate ? "pointer" : "default",
+            fontWeight: 700,
+            color: "#1a160e",
+            background: A,
+            opacity: canGenerate ? 1 : 0.5,
+          }}
+        >
+          Generate
+        </button>
+        {chip && (
+          <span style={{ fontSize: 11, color: chip.c, minWidth: 56 }}>{chip.t}</span>
+        )}
+      </div>
+      <div style={{ fontSize: 10, color: "#7d7252" }}>
+        Sends only a padded crop of the selection; the rest stays untouched. Mock edit until a
+        WaveSpeed model is wired (Phase 7) — set your key in ⚙ Settings.
+      </div>
+      {history.length > 0 && (
+        <div style={{ display: "flex", gap: 6, overflowX: "auto" }}>
+          {history.map((h, i) => (
+            <img
+              key={i}
+              src={h.url}
+              title={h.prompt}
+              onClick={() => onPick(h.url)}
+              style={{ height: 44, borderRadius: 4, border: "1px solid #2a2f37", cursor: "pointer" }}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

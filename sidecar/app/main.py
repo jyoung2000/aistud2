@@ -19,11 +19,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import imaging
+from app import compose, imaging
 from app import settings as settings_store
 from app.constants import APP_NAME, DEFAULT_PORT, PORT_ENV, PORT_STDOUT_PREFIX
 from app.device import banner, detect_device
+from app.jobs import jobs
 from app.matting import EdgeRefiner
+from app.models import wavespeed
+from app.models.adapters import flux_fill
 from app.select_sam import SmartSelector
 
 app = FastAPI(title=f"{APP_NAME} sidecar")
@@ -156,6 +159,110 @@ def refine(body: RefineIn) -> dict:
         raise HTTPException(status_code=400, detail="mask size != image size")
     alpha = _refiner.refine(session.rgb, mask)
     return {"mask_png": imaging.png_to_base64(alpha), "backend": _refiner.backend}
+
+
+class GenerateIn(BaseModel):
+    id: str
+    mask_png: str
+    prompt: str = ""
+    model_slug: Optional[str] = None
+    mock: bool = False
+    pad_frac: float = 0.12
+    feather: float = 2.5
+    params: dict = {}
+
+
+class PollIn(BaseModel):
+    job_id: str
+
+
+def _job_payload(job) -> dict:
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "mode": job.mode,
+        "region": list(job.region),
+        "result_png": job.result_png,
+        "error": job.error,
+    }
+
+
+@app.post("/generate")
+def generate(body: GenerateIn) -> dict:
+    try:
+        session = imaging.require_active(body.id)
+    except KeyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    mask = imaging.base64_to_gray(body.mask_png)
+    if mask.shape[:2] != (session.height, session.width):
+        raise HTTPException(status_code=400, detail="mask size != image size")
+    try:
+        crop, cmask, region = compose.crop_region(session.rgb, mask, body.pad_frac)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="empty selection")
+    alpha = compose.feather_alpha(cmask, body.feather)
+    job = jobs.create(
+        rgb=session.rgb,
+        region=region,
+        alpha=alpha,
+        crop_rgb=crop,
+        crop_mask=cmask,
+        prompt=body.prompt,
+        slug=body.model_slug,
+    )
+
+    key = settings_store.get_secret("wavespeed_api_key")
+    use_real = (not body.mock) and bool(key) and bool(body.model_slug)
+    if not use_real:
+        # mock path — full loop works without a key; result lands only in the selection.
+        res = compose.mock_edit(crop, body.prompt)
+        out = compose.composite_back(session.rgb, region, res, alpha)
+        job.mode = "mock"
+        job.status = "completed"
+        job.result_png = imaging.png_to_base64(out, "RGB")
+        return _job_payload(job)
+
+    try:
+        payload = flux_fill.build_payload(crop, cmask, body.prompt, body.params)
+        pid = wavespeed.submit(body.model_slug, payload, key)
+        job.mode = "wavespeed"
+        job.status = "polling"
+        job.prediction_id = pid
+        return _job_payload(job)
+    except Exception as e:
+        job.status = "failed"
+        job.error = str(e)
+        raise HTTPException(status_code=502, detail=f"submit failed: {e}")
+
+
+@app.post("/poll")
+def poll_generation(body: PollIn) -> dict:
+    job = jobs.get(body.job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="unknown job")
+    if job.status in ("completed", "failed"):
+        return _job_payload(job)
+    key = settings_store.get_secret("wavespeed_api_key")
+    if not key:
+        raise HTTPException(status_code=409, detail="no WaveSpeed key")
+    try:
+        status, outputs, err = wavespeed.poll(job.prediction_id, key)
+    except Exception as e:
+        return {**_job_payload(job), "note": f"poll error (will retry): {e}"}
+
+    if status == "completed" and outputs:
+        try:
+            res = imaging.load_rgb(wavespeed.download_image(outputs[0]))
+            out = compose.composite_back(job.rgb, job.region, res, job.alpha)
+            job.status = "completed"
+            job.result_png = imaging.png_to_base64(out, "RGB")
+        except Exception as e:
+            job.status = "failed"
+            job.error = f"composite failed: {e}"
+    elif status == "failed":
+        job.status = "failed"
+        job.error = err
+    return _job_payload(job)
 
 
 def _ui_dir() -> Path | None:

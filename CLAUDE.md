@@ -204,7 +204,15 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
       Esc cancels, Enter commits (rasterize→active boolean op). Invert `Cmd/Ctrl+Shift+I`
       (MaskBuffer.invert) for background selection. Live outline while editing; selection %%
       in toolbar. Flatten + hit-tests unit-tested.
-- [ ] Phase 6 — Edit pipeline: crop-composite + first model
+- [x] **Phase 6** — Edit pipeline. `compose.py` (mask bbox → 12% pad → full-res crop →
+      feather alpha → composite-back; alpha==0 + outside-region pixels stay byte-identical —
+      verified). `models/wavespeed.py` (submit → poll `predictions/{id}/result` →
+      `outputs[0]`, backoff/timeout/error). `models/adapters/flux_fill.py` (crop+mask+prompt
+      payload). `jobs.py` job store. `/generate` (mock path when no key/slug; WaveSpeed
+      otherwise) + `/poll` (downloads result, composites back). Frontend `api/generate.ts`
+      + canvas amber Generate bar (prompt, status chip polling/done/failed, history strip);
+      result re-uploaded so edits compound. Mock generate verified e2e (outside region
+      bit-identical).
 - [ ] Phase 7 — Model registry & adapters
 - [ ] Phase 8 — Model prompt profiles & synthesis
 - [ ] Phase 9 — Finish & package
