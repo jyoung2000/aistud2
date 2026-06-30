@@ -8,6 +8,8 @@ import {
 } from "./referenceBlock";
 import { ModelCompare, ParadigmBadge } from "./modelCompare";
 import { TunedPrompts } from "./tunedPrompts";
+import { LoraPanel } from "./loraPanel";
+import type { AttachedLora } from "../api/loras";
 
 // Minimal "Model & params" step of the inspector pipeline. Stub host so the Reference
 // block (M1) and Compare mode (shootout M1) can be built and verified standalone;
@@ -27,6 +29,7 @@ export function InspectorPipeline() {
   });
   const [intent, setIntent] = useState("");
   const [subject, setSubject] = useState("");
+  const [attachedLoras, setAttachedLoras] = useState<AttachedLora[]>([]);
 
   // The reference block needs one model. In compare mode it follows the first selected
   // model (the "primary"); otherwise the single active model.
@@ -135,6 +138,10 @@ export function InspectorPipeline() {
         onSwitchModel={switchModel}
       />
 
+      {model.supports_lora && (
+        <LoraPanel model={model} attached={attachedLoras} onAttached={setAttachedLoras} />
+      )}
+
       {compareMode && (
         <>
           <p style={{ margin: 0, fontSize: 10.5, color: "#5b6470", lineHeight: 1.4 }}>
@@ -146,6 +153,7 @@ export function InspectorPipeline() {
             intent={intent}
             subject={subject}
             reference={{ role: refState.role, present: !!refState.file }}
+            loraTriggers={attachedLoras.flatMap((a) => a.trigger_words)}
             onIntent={setIntent}
             onSubject={setSubject}
           />

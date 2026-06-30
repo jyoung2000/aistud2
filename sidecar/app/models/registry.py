@@ -26,6 +26,8 @@ class ModelSpec:
     reference_inputs: Dict[str, str]
     build: Callable
     confirmed_slug: bool = False
+    supports_lora: bool = False
+    max_loras: int = 0
 
 
 REGISTRY: List[ModelSpec] = [
@@ -45,7 +47,7 @@ REGISTRY: List[ModelSpec] = [
         needs_mask=False, instruction_based=True,
         reference_roles=["replace", "pose"],
         reference_inputs={"replace": "multi_image", "pose": "multi_image"},
-        build=qwen_edit.build_payload,
+        build=qwen_edit.build_payload, supports_lora=True, max_loras=3,
     ),
     ModelSpec(
         "flux-kontext", "FLUX Kontext", "flux-kontext/dev", "instruction", 1.0,
@@ -86,6 +88,8 @@ def public_list() -> list:
             "reference_roles": m.reference_roles,
             "reference_inputs": m.reference_inputs,
             "confirmed_slug": m.confirmed_slug,
+            "supports_lora": m.supports_lora,
+            "max_loras": m.max_loras,
         }
         for m in REGISTRY
     ]
@@ -99,6 +103,7 @@ def build_payload(
     params: dict,
     reference_rgb: Optional[np.ndarray] = None,
     reference_role: Optional[str] = None,
+    loras: Optional[list] = None,
 ) -> tuple:
     """Return (slug, payload) for a model. Raises if unknown."""
     spec = get(model_id)
@@ -112,4 +117,10 @@ def build_payload(
         reference_rgb=reference_rgb,
         reference_role=reference_role,
     )
+    # LoRA stack — only attach for models that support it (machine-introspected cap wins).
+    if loras and spec.supports_lora:
+        capped = loras[: spec.max_loras]
+        payload["loras"] = [
+            {"path": l.get("ref"), "scale": float(l.get("weight", 1.0))} for l in capped if l.get("ref")
+        ]
     return spec.slug, payload

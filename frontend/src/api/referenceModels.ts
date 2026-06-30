@@ -29,6 +29,8 @@ export interface ModelRefCaps {
   needs_mask?: boolean;
   instruction_based?: boolean;
   confirmed_slug?: boolean;
+  supports_lora?: boolean;
+  max_loras?: number;
 }
 
 /** Max models in a comparison set (shootout). Comparison is intentional spend. */

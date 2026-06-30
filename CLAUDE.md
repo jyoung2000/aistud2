@@ -196,7 +196,14 @@ the visible picture is the composite of base → layers (in array order, bottom�
   byte-identical.
 - Tier-1/2 milestones: [x] P1 layer stack · [x] P2 .neuclip save + adjustment layers + crop ·
   [x] P3 harmonize · [x] P4 iterate/re-roll · [x] P5 stronger select · [x] P6 outpaint ·
-  [x] P7 upscale/face-restore · [x] P8 before/after diff · [ ] P9 LoRA.
+  [x] P7 upscale/face-restore · [x] P8 before/after diff · [x] P9 LoRA.
+- LoRA: registry `supports_lora`/`max_loras` per model (machine cap wins); `loras.py` library
+  (local paths or hosted refs, trigger words, compatible base) + `/loras` GET/POST/remove;
+  `/generate` `loras` attached via `registry.build_payload` only for supporting models;
+  synthesis injects trigger words into the prompt (`/synthesize` + frontend stub). Frontend
+  `panels/loraPanel.tsx` (amber) in the inspector when `supports_lora` — library + register +
+  attach stack with weight sliders. Verified: weight reaches payload (scale 0.85), dropped
+  for non-LoRA models, trigger injected into the synthesized prompt.
 
 ## Phase status
 - [x] **Phase 0** — Shell & handshake (sidecar `/health`, port discovery, Tauri spawn,

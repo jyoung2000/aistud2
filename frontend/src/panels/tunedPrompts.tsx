@@ -16,6 +16,7 @@ export function TunedPrompts({
   intent,
   subject,
   reference,
+  loraTriggers,
   onIntent,
   onSubject,
 }: {
@@ -23,16 +24,17 @@ export function TunedPrompts({
   intent: string;
   subject: string;
   reference?: { role: ReferenceRole; present: boolean };
+  loraTriggers?: string[];
   onIntent: (v: string) => void;
   onSubject: (v: string) => void;
 }) {
   const models = set.map(modelById).filter(Boolean) as ModelRefCaps[];
 
   const results = useMemo(() => {
-    const input: SynthInput = { intent, subject, reference };
+    const input: SynthInput = { intent, subject, reference, loraTriggers };
     return models.map((m) => ({ model: m, ...synthesize(input, m) }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [set.join(","), intent, subject, reference?.role, reference?.present]);
+  }, [set.join(","), intent, subject, reference?.role, reference?.present, (loraTriggers ?? []).join(",")]);
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 10 }}>

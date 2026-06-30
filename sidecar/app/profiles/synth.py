@@ -46,6 +46,7 @@ def synthesize(
     subject: Optional[str] = None,
     reference_role: Optional[str] = None,
     crop_desc: Optional[str] = None,
+    loras: Optional[list] = None,
 ) -> dict:
     paradigm = profile.get("paradigm", "instruction")
     subject = (subject or "the selected subject").strip()
@@ -77,6 +78,17 @@ def synthesize(
         rules.append("vision-grounded subject")
     if reference_role:
         rules.append(f"reference role: {reference_role}")
+
+    # LoRA trigger-word injection — prepend any attached LoRA triggers so the LoRA fires.
+    if loras:
+        triggers: list = []
+        for lo in loras:
+            for tw in lo.get("trigger_words", []) or ([lo["trigger"]] if lo.get("trigger") else []):
+                if tw and tw not in triggers:
+                    triggers.append(tw)
+        if triggers:
+            prompt = f"{', '.join(triggers)}, {prompt}"
+            rules.append(f"injected LoRA trigger(s): {', '.join(triggers)}")
 
     max_tokens = int(profile.get("constraints", {}).get("max_prompt_tokens", 512))
     prompt, truncated = _truncate(" ".join(prompt.split()), max_tokens)

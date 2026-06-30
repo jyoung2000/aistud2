@@ -23,6 +23,7 @@ from app import compose, imaging
 from app import settings as settings_store
 from app.constants import APP_NAME, DEFAULT_PORT, PORT_ENV, PORT_STDOUT_PREFIX
 from app.device import banner, detect_device
+from app import loras as lora_lib
 from app.jobs import jobs
 from app.matting import EdgeRefiner
 from app.models import registry, wavespeed
@@ -242,6 +243,29 @@ def list_models() -> dict:
     return {"models": registry.public_list()}
 
 
+@app.get("/loras")
+def get_loras() -> dict:
+    return {"loras": lora_lib.list_loras()}
+
+
+class LoraIn(BaseModel):
+    name: str
+    trigger_words: list[str] = []
+    ref: str  # local path or hosted URL/id
+    compatible_base: str = ""
+    weight_default: float = 0.8
+
+
+@app.post("/loras")
+def register_lora(body: LoraIn) -> dict:
+    return {"loras": lora_lib.register(body.model_dump())}
+
+
+@app.post("/loras/remove")
+def remove_lora(body: dict) -> dict:
+    return {"loras": lora_lib.remove(str(body.get("id", "")))}
+
+
 class GenerateIn(BaseModel):
     id: str
     mask_png: str
@@ -255,6 +279,7 @@ class GenerateIn(BaseModel):
     reference_png: Optional[str] = None  # base64 PNG of the reference image
     reference_role: Optional[str] = None  # replace | pose | style
     harmonize: Optional[dict] = None  # {on,colorMatch,relight,grainMatch,strength}
+    loras: list[dict] = []  # [{ref, weight, trigger_words}]
 
 
 class PollIn(BaseModel):
@@ -329,7 +354,8 @@ def generate(body: GenerateIn) -> dict:
             reference_rgb = imaging.load_rgb(_b64.b64decode(body.reference_png.split(",")[-1]))
         body.params.setdefault("seed", body.seed)
         slug, payload = registry.build_payload(
-            body.model_slug, crop, cmask, body.prompt, body.params, reference_rgb, body.reference_role
+            body.model_slug, crop, cmask, body.prompt, body.params, reference_rgb,
+            body.reference_role, body.loras,
         )
         pid = wavespeed.submit(slug, payload, key)
         job.slug = slug
@@ -444,6 +470,7 @@ class SynthIn(BaseModel):
     intent: str = ""
     subject: Optional[str] = None
     reference_role: Optional[str] = None
+    loras: list[dict] = []
 
 
 @app.post("/synthesize")
@@ -452,7 +479,9 @@ def synthesize_prompt(body: SynthIn) -> dict:
         profile, warnings = profile_store.load(body.model_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown model")
-    res = profile_synth.synthesize(profile, body.intent, body.subject, body.reference_role)
+    res = profile_synth.synthesize(
+        profile, body.intent, body.subject, body.reference_role, loras=body.loras
+    )
     return {**res, "warnings": warnings}
 
 

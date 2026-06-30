@@ -15,6 +15,8 @@ export interface SynthInput {
   subject?: string;
   /** Active reference role + whether an image is attached (shared across models). */
   reference?: { role: ReferenceRole; present: boolean };
+  /** Attached LoRA trigger words to inject (Tier-1 P9). */
+  loraTriggers?: string[];
 }
 
 export interface SynthResult {
@@ -107,6 +109,12 @@ export function synthesize(input: SynthInput, model: ModelRefCaps): SynthResult 
   if (refClause) {
     prompt = `${prompt} ${refClause}`;
     ruleNote = `${ruleNote}; + ${input.reference!.role} reference clause`;
+  }
+
+  const triggers = (input.loraTriggers ?? []).filter(Boolean);
+  if (triggers.length) {
+    prompt = `${triggers.join(", ")}, ${prompt}`;
+    ruleNote = `${ruleNote}; injected LoRA trigger(s): ${triggers.join(", ")}`;
   }
 
   return { ...base, prompt, ruleNote };
