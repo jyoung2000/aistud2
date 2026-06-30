@@ -178,10 +178,23 @@ class GenerateIn(BaseModel):
     params: dict = {}
     reference_png: Optional[str] = None  # base64 PNG of the reference image
     reference_role: Optional[str] = None  # replace | pose | style
+    harmonize: Optional[dict] = None  # {on,colorMatch,relight,grainMatch,strength}
 
 
 class PollIn(BaseModel):
     job_id: str
+
+
+def _maybe_harmonize(base_rgb, region, result_crop, crop_mask, opts):
+    if not opts or not opts.get("on"):
+        return result_crop
+    from app.harmonize import harmonize as _hz
+
+    try:
+        return _hz(base_rgb, region, result_crop, crop_mask, opts)
+    except Exception as e:
+        print(f"[harmonize] skipped: {e}")
+        return result_crop
 
 
 def _job_payload(job) -> dict:
@@ -217,6 +230,7 @@ def generate(body: GenerateIn) -> dict:
         crop_mask=cmask,
         prompt=body.prompt,
         slug=body.model_slug,
+        harmonize=body.harmonize,
     )
 
     key = settings_store.get_secret("wavespeed_api_key")
@@ -224,6 +238,7 @@ def generate(body: GenerateIn) -> dict:
     if not use_real:
         # mock path — full loop works without a key; result lands only in the selection.
         res = compose.mock_edit(crop, body.prompt)
+        res = _maybe_harmonize(session.rgb, region, res, cmask, body.harmonize)
         out = compose.composite_back(session.rgb, region, res, alpha)
         job.mode = "mock"
         job.status = "completed"
@@ -273,6 +288,12 @@ def poll_generation(body: PollIn) -> dict:
     if status == "completed" and outputs:
         try:
             res = imaging.load_rgb(wavespeed.download_image(outputs[0]))
+            # resize to the crop, harmonize the seam, then composite
+            x0, y0, x1, y1 = job.region
+            import cv2 as _cv2
+
+            res = _cv2.resize(res, (x1 - x0 + 1, y1 - y0 + 1), interpolation=_cv2.INTER_LANCZOS4)
+            res = _maybe_harmonize(job.rgb, job.region, res, job.crop_mask, job.harmonize)
             out = compose.composite_back(job.rgb, job.region, res, job.alpha)
             job.status = "completed"
             job.result_png = imaging.png_to_base64(out, "RGB")

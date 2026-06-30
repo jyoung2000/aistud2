@@ -25,6 +25,7 @@ class Job:
     result_png: Optional[str] = None  # composited full image, base64 PNG
     error: Optional[str] = None
     cost_cents: Optional[float] = None
+    harmonize: Optional[dict] = None  # seam-harmonization opts applied on composite
 
 
 class JobStore:

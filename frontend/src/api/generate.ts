@@ -10,12 +10,23 @@ export interface GenJob {
   error: string | null;
 }
 
+export interface HarmonizeOpts {
+  on: boolean;
+  colorMatch: boolean;
+  relight: boolean;
+  grainMatch: boolean;
+  strength: number;
+}
+
 export interface GenOpts {
   mock?: boolean;
   model_slug?: string;
   params?: Record<string, unknown>;
   pad_frac?: number;
   feather?: number;
+  harmonize?: HarmonizeOpts;
+  reference_png?: string;
+  reference_role?: string;
 }
 
 export async function generate(

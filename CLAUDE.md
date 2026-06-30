@@ -188,8 +188,14 @@ the visible picture is the composite of base → layers (in array order, bottom�
   saturation/temperature/vibrance applied in `composite()` to everything below (sliders in
   the layers panel). **Crop & straighten**: non-destructive `DocTransform {straighten,crop}`
   applied at export; aspect presets + straighten slider in the FileBar.
+- Seam harmonization (`sidecar/app/harmonize.py`): per-ai-edit post pass before composite —
+  LAB Reinhard color-match to the surround ring, low-freq luma relight, grain match; scaled
+  by one `strength`, applied only inside the selection. Wired into `/generate` (mock) and
+  `/poll` (real) via `harmonize` opts; stored on the layer. Frontend toggle + strength in the
+  Generate bar (default on, 0.6). Verified: edit mean pulled toward surround (138→45), outside
+  byte-identical.
 - Tier-1/2 milestones: [x] P1 layer stack · [x] P2 .neuclip save + adjustment layers + crop ·
-  [ ] P3 harmonize · [ ] P4 iterate/re-roll · [ ] P5 stronger select · [ ] P6 outpaint ·
+  [x] P3 harmonize · [ ] P4 iterate/re-roll · [ ] P5 stronger select · [ ] P6 outpaint ·
   [ ] P7 upscale/face-restore · [ ] P8 before/after diff · [ ] P9 LoRA.
 
 ## Phase status

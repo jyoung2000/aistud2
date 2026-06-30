@@ -33,6 +33,7 @@ import {
   runToCompletion,
   maskToPngDataUrl,
   resultToImage,
+  type HarmonizeOpts,
 } from "../api/generate";
 import { COLOR_GENERATION } from "../constants";
 import {
@@ -106,6 +107,13 @@ export function CanvasStage() {
   const [prompt, setPrompt] = useState("");
   const [genStatus, setGenStatus] = useState<"idle" | "busy" | "polling" | "done" | "failed">("idle");
   const [history, setHistory] = useState<{ url: string; prompt: string }[]>([]);
+  const [harmonize, setHarmonize] = useState<HarmonizeOpts>({
+    on: true,
+    colorMatch: true,
+    relight: true,
+    grainMatch: true,
+    strength: 0.6,
+  });
 
   // layer document — `img` is the base (never replaced after open); edits become layers.
   const [layers, setLayers] = useState<DocLayer[]>([]);
@@ -870,7 +878,7 @@ export function CanvasStage() {
     const maskPng = maskToPngDataUrl(mask.data, mask.width, mask.height);
     setGenStatus("busy");
     try {
-      const job = await generate(imageId, maskPng, prompt, { mock: true });
+      const job = await generate(imageId, maskPng, prompt, { mock: true, harmonize });
       const done = await runToCompletion(job, (s) =>
         setGenStatus(s === "polling" ? "polling" : "busy")
       );
@@ -895,6 +903,7 @@ export function CanvasStage() {
             params: {},
             sendRegion: (done.region as [number, number, number, number]) ?? [0, 0, img.naturalWidth - 1, img.naturalHeight - 1],
           },
+          harmonize: { ...harmonize },
         };
         setLayers((ls) => [...ls, layer]); // top of stack
         setActiveLayer(id);
@@ -1145,6 +1154,8 @@ export function CanvasStage() {
         status={genStatus}
         canGenerate={!!imageId && !!mask && !mask.isEmpty() && genStatus !== "busy" && genStatus !== "polling"}
         onGenerate={generateNow}
+        harmonize={harmonize}
+        onHarmonize={setHarmonize}
         history={history}
         onPick={() => {
           /* layers are the source of truth now; result thumbnails are informational */
@@ -1161,6 +1172,8 @@ function GenerateBar({
   status,
   canGenerate,
   onGenerate,
+  harmonize,
+  onHarmonize,
   history,
   onPick,
 }: {
@@ -1169,6 +1182,8 @@ function GenerateBar({
   status: "idle" | "busy" | "polling" | "done" | "failed";
   canGenerate: boolean;
   onGenerate: () => void;
+  harmonize: HarmonizeOpts;
+  onHarmonize: (h: HarmonizeOpts) => void;
   history: { url: string; prompt: string }[];
   onPick: (url: string) => void;
 }) {
@@ -1231,9 +1246,30 @@ function GenerateBar({
           <span style={{ fontSize: 11, color: chip.c, minWidth: 56 }}>{chip.t}</span>
         )}
       </div>
-      <div style={{ fontSize: 10, color: "#7d7252" }}>
-        Sends only a padded crop of the selection; the rest stays untouched. Mock edit until a
-        WaveSpeed model is wired (Phase 7) — set your key in ⚙ Settings.
+      <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 10.5, color: "#9a8b6a" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={harmonize.on}
+            onChange={(e) => onHarmonize({ ...harmonize, on: e.target.checked })}
+            style={{ accentColor: A }}
+          />
+          Harmonize seam
+        </label>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={harmonize.strength}
+          disabled={!harmonize.on}
+          onChange={(e) => onHarmonize({ ...harmonize, strength: Number(e.target.value) })}
+          style={{ width: 90, accentColor: A }}
+        />
+        <span style={{ width: 34 }}>{Math.round(harmonize.strength * 100)}%</span>
+        <span style={{ color: "#7d7252" }}>
+          color-match · relight · grain. Sends only a padded crop; the rest stays untouched.
+        </span>
       </div>
       {history.length > 0 && (
         <div style={{ display: "flex", gap: 6, overflowX: "auto" }}>
