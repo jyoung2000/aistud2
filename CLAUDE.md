@@ -197,7 +197,13 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
       (snaps to edges, preview segment). All commit a closed path via the active boolean op
       (Shift/Alt) into the shared mask. Cost map + Dijkstra unit-tested (edge cost 14 vs 255;
       path hugs low-cost corridor).
-- [ ] Phase 5 — Manual editable selection (pen-grade)
+- [x] **Phase 5** — Manual editable pen. `canvas/manualPen.ts` (anchors with in/out Bézier
+      handles, cubic flatten, anchor/handle/segment hit-tests, bbox) + canvasStage Pen tool:
+      click=corner anchor, click-drag=smooth w/ symmetric handles, drag anchors/handles to
+      edit, click-segment inserts, Alt-click toggles corner↔smooth, Delete removes (heals),
+      Esc cancels, Enter commits (rasterize→active boolean op). Invert `Cmd/Ctrl+Shift+I`
+      (MaskBuffer.invert) for background selection. Live outline while editing; selection %%
+      in toolbar. Flatten + hit-tests unit-tested.
 - [ ] Phase 6 — Edit pipeline: crop-composite + first model
 - [ ] Phase 7 — Model registry & adapters
 - [ ] Phase 8 — Model prompt profiles & synthesis

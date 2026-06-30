@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Stage, Layer, Image as KImage, Line, Circle } from "react-konva";
+import { Stage, Layer, Image as KImage, Line, Circle, Rect } from "react-konva";
 import { COLOR_SELECTION } from "../constants";
 import {
   fitTransform,
@@ -12,6 +12,16 @@ import { MaskBuffer, opFromModifiers, type BoolOp } from "./maskBuffer";
 import { rasterizePolygon, dist, constrain45, flatten } from "./lasso";
 import { LiveWire } from "./livewire";
 import {
+  emptyPath,
+  flattenPath,
+  mirror,
+  nearestAnchor,
+  nearestHandle,
+  nearestSegment,
+  type Anchor,
+  type PenPath,
+} from "./manualPen";
+import {
   loadImageToSidecar,
   refineMask,
   smartSelect,
@@ -19,7 +29,7 @@ import {
   type SamPoint,
 } from "../api/select";
 
-type Tool = "select" | "lasso" | "hand";
+type Tool = "select" | "lasso" | "pen" | "hand";
 type LassoMode = "free" | "poly" | "magnetic";
 
 function maskToCanvas(mask: MaskBuffer): HTMLCanvasElement {
@@ -58,6 +68,12 @@ export function CanvasStage() {
   const lassoOp = useRef<BoolOp>("replace");
   const wire = useRef<LiveWire | null>(null);
   const freehand = useRef(false);
+
+  // manual pen
+  const [pen, setPen] = useState<PenPath>(emptyPath());
+  const [penSel, setPenSel] = useState(-1);
+  const penDrag = useRef<{ kind: "anchor" | "in" | "out" | "new"; index: number } | null>(null);
+  const penOp = useRef<BoolOp>("replace");
 
   // gesture refs (avoid re-renders mid-drag)
   const drag = useRef<{ start: Pt; startT: ViewTransform; pan: boolean; moved: boolean; down: Pt } | null>(null);
@@ -121,7 +137,7 @@ export function CanvasStage() {
     };
   }, [vp.w, vp.h, img]);
 
-  // lasso keyboard: Shift+L cycle, Enter close, Backspace undo anchor, Esc cancel, [ ] width
+  // selection keyboard: lasso + pen editing, invert
   useEffect(() => {
     const typing = () => {
       const el = document.activeElement;
@@ -129,31 +145,53 @@ export function CanvasStage() {
     };
     const onKey = (e: KeyboardEvent) => {
       if (typing()) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.shiftKey && (e.key === "i" || e.key === "I")) {
+        e.preventDefault();
+        invertMask(); // Cmd/Ctrl+Shift+I — invert (subject -> background)
+        return;
+      }
       if (e.key === "L" && e.shiftKey) {
         e.preventDefault();
         setTool("lasso");
         setLassoMode((m) => (m === "free" ? "poly" : m === "poly" ? "magnetic" : "free"));
         cancelLasso();
-      } else if (e.key === "Enter" && lassoPts.length > 2) {
-        e.preventDefault();
-        commitLasso(lassoPts);
-      } else if (e.key === "Backspace" && lassoPts.length > 0) {
-        e.preventDefault();
-        const np = lassoPts.slice(0, -1);
-        setLassoPts(np);
-        if (lassoMode === "magnetic" && np.length) wire.current?.setSeed(np[np.length - 1]);
-      } else if (e.key === "Escape") {
-        cancelLasso();
-      } else if ((e.key === "[" || e.key === "]") && wire.current) {
-        const w = wire.current;
-        w.windowRadius = Math.max(60, Math.min(600, w.windowRadius + (e.key === "]" ? 40 : -40)));
-        if (lassoPts.length) w.setSeed(lassoPts[lassoPts.length - 1]);
+        return;
+      }
+      if (tool === "lasso") {
+        if (e.key === "Enter" && lassoPts.length > 2) {
+          e.preventDefault();
+          commitLasso(lassoPts);
+        } else if (e.key === "Backspace" && lassoPts.length > 0) {
+          e.preventDefault();
+          const np = lassoPts.slice(0, -1);
+          setLassoPts(np);
+          if (lassoMode === "magnetic" && np.length) wire.current?.setSeed(np[np.length - 1]);
+        } else if (e.key === "Escape") {
+          cancelLasso();
+        } else if ((e.key === "[" || e.key === "]") && wire.current) {
+          const w = wire.current;
+          w.windowRadius = Math.max(60, Math.min(600, w.windowRadius + (e.key === "]" ? 40 : -40)));
+          if (lassoPts.length) w.setSeed(lassoPts[lassoPts.length - 1]);
+        }
+      } else if (tool === "pen") {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commitPen();
+        } else if ((e.key === "Backspace" || e.key === "Delete") && penSel >= 0) {
+          e.preventDefault();
+          const arr = pen.anchors.filter((_, i) => i !== penSel);
+          setPen({ ...pen, anchors: arr });
+          setPenSel(-1);
+        } else if (e.key === "Escape") {
+          cancelPen();
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lassoPts, lassoMode, mask]);
+  }, [tool, lassoPts, lassoMode, pen, penSel, mask]);
 
   const maskCanvas = useMemo(
     () => (mask && !mask.isEmpty() ? maskToCanvas(mask) : null),
@@ -256,6 +294,8 @@ export function CanvasStage() {
       lassoOp.current = opFromModifiers(e.evt.shiftKey, e.evt.altKey);
       freehand.current = true;
       setLassoPts([ip]);
+    } else if (tool === "pen") {
+      penDown(screenToImage(p, t), e);
     }
   };
 
@@ -271,6 +311,10 @@ export function CanvasStage() {
     }
     const ip = p ? screenToImage(p, t) : null;
     setCursor(ip);
+    if (tool === "pen" && ip && penDrag.current) {
+      penMove(ip);
+      return;
+    }
     if (tool === "lasso" && ip) {
       setLassoCursor(ip);
       if (freehand.current) {
@@ -286,6 +330,10 @@ export function CanvasStage() {
     const p = ptr(e);
     drag.current = null;
     setPanning(false);
+    if (tool === "pen") {
+      penDrag.current = null;
+      return;
+    }
     if (!d || d.pan || !p || !mask || !img) return;
 
     if (tool === "lasso") {
@@ -383,6 +431,120 @@ export function CanvasStage() {
     }
   };
 
+  // --- manual pen ---
+  const penDown = (ip: Pt, e: any) => {
+    const r = 9 / t.scale;
+    const h = nearestHandle(pen, ip, r);
+    if (h) {
+      penDrag.current = { kind: h.which, index: h.index };
+      setPenSel(h.index);
+      return;
+    }
+    const ai = nearestAnchor(pen, ip, r);
+    if (ai >= 0) {
+      if (e.evt.altKey) {
+        toggleSmooth(ai);
+        return;
+      }
+      if (ai === 0 && pen.anchors.length > 2 && !pen.closed) {
+        setPen({ ...pen, closed: true });
+        setPenSel(0);
+        return;
+      }
+      penDrag.current = { kind: "anchor", index: ai };
+      setPenSel(ai);
+      return;
+    }
+    const seg = nearestSegment(pen, ip, r);
+    if (seg) {
+      const a: Anchor = { p: seg.point, hIn: null, hOut: null, smooth: false };
+      const arr = [...pen.anchors];
+      arr.splice(seg.index + 1, 0, a);
+      setPen({ ...pen, anchors: arr });
+      setPenSel(seg.index + 1);
+      penDrag.current = { kind: "anchor", index: seg.index + 1 };
+      return;
+    }
+    if (pen.anchors.length === 0) penOp.current = opFromModifiers(e.evt.shiftKey, e.evt.altKey);
+    if (pen.closed) return; // closed path: no extending
+    const a: Anchor = { p: ip, hIn: null, hOut: null, smooth: false };
+    const arr = [...pen.anchors, a];
+    setPen({ ...pen, anchors: arr });
+    setPenSel(arr.length - 1);
+    penDrag.current = { kind: "new", index: arr.length - 1 };
+  };
+
+  const penMove = (ip: Pt) => {
+    const dr = penDrag.current;
+    if (!dr) return;
+    const arr = pen.anchors.map((a) => ({
+      p: { ...a.p },
+      hIn: a.hIn ? { ...a.hIn } : null,
+      hOut: a.hOut ? { ...a.hOut } : null,
+      smooth: a.smooth,
+    }));
+    const a = arr[dr.index];
+    if (dr.kind === "anchor") {
+      const dx = ip.x - a.p.x;
+      const dy = ip.y - a.p.y;
+      a.p = ip;
+      if (a.hIn) a.hIn = { x: a.hIn.x + dx, y: a.hIn.y + dy };
+      if (a.hOut) a.hOut = { x: a.hOut.x + dx, y: a.hOut.y + dy };
+    } else if (dr.kind === "out" || dr.kind === "new") {
+      a.hOut = ip;
+      a.smooth = true;
+      a.hIn = mirror(a.p, ip);
+    } else {
+      a.hIn = ip;
+      a.smooth = true;
+      a.hOut = mirror(a.p, ip);
+    }
+    setPen({ ...pen, anchors: arr });
+  };
+
+  const toggleSmooth = (ai: number) => {
+    const arr = [...pen.anchors];
+    const a = { ...arr[ai] };
+    if (a.smooth) {
+      a.smooth = false;
+      a.hIn = null;
+      a.hOut = null;
+    } else {
+      a.smooth = true;
+      const n = arr.length;
+      const prev = arr[(ai - 1 + n) % n].p;
+      const next = arr[(ai + 1) % n].p;
+      const d = { x: (next.x - prev.x) / 4, y: (next.y - prev.y) / 4 };
+      a.hOut = { x: a.p.x + d.x, y: a.p.y + d.y };
+      a.hIn = { x: a.p.x - d.x, y: a.p.y - d.y };
+    }
+    arr[ai] = a;
+    setPen({ ...pen, anchors: arr });
+  };
+
+  const cancelPen = () => {
+    setPen(emptyPath());
+    setPenSel(-1);
+    penDrag.current = null;
+  };
+  const commitPen = () => {
+    if (!mask || pen.anchors.length < 3) {
+      cancelPen();
+      return;
+    }
+    const poly = flattenPath({ ...pen, closed: true });
+    const next = mask.clone();
+    next.apply(rasterizePolygon(poly, mask.width, mask.height), penOp.current);
+    setMask(next);
+    cancelPen();
+  };
+  const invertMask = () => {
+    if (!mask) return;
+    const next = mask.clone();
+    next.invert();
+    setMask(next);
+  };
+
   const cursorStyle = !img
     ? "default"
     : panning
@@ -401,6 +563,8 @@ export function CanvasStage() {
         onTool={setTool}
         lassoMode={lassoMode}
         onLassoMode={setLassoMode}
+        selPct={mask && !mask.isEmpty() ? (mask.area() / (mask.width * mask.height)) * 100 : 0}
+        onInvert={invertMask}
         backend={backend}
         busy={busy}
         canRefine={!!mask && !mask.isEmpty()}
@@ -434,6 +598,7 @@ export function CanvasStage() {
           onMouseUp={endDrag}
           onDblClick={() => {
             if (tool === "lasso" && lassoPts.length > 2) commitLasso(lassoPts);
+            else if (tool === "pen" && pen.anchors.length > 2) commitPen();
           }}
           onMouseLeave={(e: any) => {
             setCursor(null);
@@ -501,6 +666,69 @@ export function CanvasStage() {
                 )}
               </>
             )}
+            {tool === "pen" && pen.anchors.length > 0 && (
+              <>
+                <Line
+                  points={flatten(flattenPath({ ...pen, closed: pen.anchors.length > 2 }))}
+                  stroke={COLOR_SELECTION}
+                  strokeWidth={1.5 / t.scale}
+                  closed={pen.anchors.length > 2}
+                  listening={false}
+                  perfectDrawEnabled={false}
+                />
+                {penSel >= 0 &&
+                  pen.anchors[penSel] &&
+                  (["hIn", "hOut"] as const).map((k) => {
+                    const a = pen.anchors[penSel];
+                    const h = a[k];
+                    if (!h) return null;
+                    return (
+                      <Line
+                        key={k}
+                        points={[a.p.x, a.p.y, h.x, h.y]}
+                        stroke="#94a3b8"
+                        strokeWidth={1 / t.scale}
+                        listening={false}
+                      />
+                    );
+                  })}
+                {penSel >= 0 &&
+                  pen.anchors[penSel] &&
+                  (["hIn", "hOut"] as const).map((k) => {
+                    const h = pen.anchors[penSel][k];
+                    if (!h) return null;
+                    return (
+                      <Circle key={k} x={h.x} y={h.y} radius={3.5 / t.scale} fill="#cbd5e1" listening={false} />
+                    );
+                  })}
+                {pen.anchors.map((a, i) =>
+                  a.smooth ? (
+                    <Circle
+                      key={i}
+                      x={a.p.x}
+                      y={a.p.y}
+                      radius={4 / t.scale}
+                      fill={i === penSel ? "#ffffff" : "#22d3ee"}
+                      stroke="#0a0c0f"
+                      strokeWidth={1 / t.scale}
+                      listening={false}
+                    />
+                  ) : (
+                    <Rect
+                      key={i}
+                      x={a.p.x - 3 / t.scale}
+                      y={a.p.y - 3 / t.scale}
+                      width={6 / t.scale}
+                      height={6 / t.scale}
+                      fill={i === penSel ? "#ffffff" : "#22d3ee"}
+                      stroke="#0a0c0f"
+                      strokeWidth={1 / t.scale}
+                      listening={false}
+                    />
+                  )
+                )}
+              </>
+            )}
           </Layer>
         </Stage>
       </div>
@@ -516,6 +744,8 @@ function ZoomBar({
   onTool,
   lassoMode,
   onLassoMode,
+  selPct,
+  onInvert,
   backend,
   busy,
   canRefine,
@@ -534,6 +764,8 @@ function ZoomBar({
   onTool: (t: Tool) => void;
   lassoMode: LassoMode;
   onLassoMode: (m: LassoMode) => void;
+  selPct: number;
+  onInvert: () => void;
   backend: string | null;
   busy: boolean;
   canRefine: boolean;
@@ -608,6 +840,13 @@ function ZoomBar({
           <option value="magnetic">Magnetic</option>
         </select>
       )}
+      <button
+        style={toolBtn(tool === "pen")}
+        onClick={() => onTool("pen")}
+        title="Manual pen — click=corner, drag=curve, Alt-click=toggle smooth, Enter commits"
+      >
+        ✎ Pen
+      </button>
       <button style={toolBtn(tool === "hand")} onClick={() => onTool("hand")} title="Hand — pan (H, or hold Space)">
         ✋ Hand
       </button>
@@ -619,9 +858,15 @@ function ZoomBar({
       >
         ✦ Refine
       </button>
+      <button style={btn} disabled={!canRefine} onClick={onInvert} title="Invert selection (Cmd/Ctrl+Shift+I)">
+        Invert
+      </button>
       <button style={btn} disabled={!canRefine} onClick={onClearSel} title="Clear selection">
         Clear
       </button>
+      {selPct > 0 && (
+        <span style={{ fontSize: 10.5, color: "#22d3ee" }}>sel {selPct.toFixed(1)}%</span>
+      )}
       {hasImage && backend && (
         <span
           style={{

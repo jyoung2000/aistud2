@@ -76,6 +76,12 @@ export class MaskBuffer {
     return !this.data.some((v) => v !== 0);
   }
 
+  /** Invert the selection in place (subject ↔ background). */
+  invert(): void {
+    const d = this.data;
+    for (let i = 0; i < d.length; i++) d[i] = d[i] ? 0 : 255;
+  }
+
   area(): number {
     let n = 0;
     const d = this.data;
