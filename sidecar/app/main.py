@@ -26,6 +26,8 @@ from app.device import banner, detect_device
 from app.jobs import jobs
 from app.matting import EdgeRefiner
 from app.models import registry, wavespeed
+from app.profiles import store as profile_store
+from app.profiles import synth as profile_synth
 from app.select_sam import SmartSelector
 
 app = FastAPI(title=f"{APP_NAME} sidecar")
@@ -281,6 +283,42 @@ def poll_generation(body: PollIn) -> dict:
         job.status = "failed"
         job.error = err
     return _job_payload(job)
+
+
+@app.get("/profiles")
+def get_profiles() -> dict:
+    return {"profiles": profile_store.list_profiles()}
+
+
+class ImportProfileIn(BaseModel):
+    yaml: str
+    persist: bool = False
+
+
+@app.post("/profiles/import")
+def import_profile(body: ImportProfileIn) -> dict:
+    try:
+        prof, warnings = profile_store.import_profile(body.yaml, body.persist)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"invalid profile: {e}")
+    return {"profile": prof, "warnings": warnings}
+
+
+class SynthIn(BaseModel):
+    model_id: str
+    intent: str = ""
+    subject: Optional[str] = None
+    reference_role: Optional[str] = None
+
+
+@app.post("/synthesize")
+def synthesize_prompt(body: SynthIn) -> dict:
+    try:
+        profile, warnings = profile_store.load(body.model_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown model")
+    res = profile_synth.synthesize(profile, body.intent, body.subject, body.reference_role)
+    return {**res, "warnings": warnings}
 
 
 def _ui_dir() -> Path | None:

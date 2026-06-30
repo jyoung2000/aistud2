@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Neuclip .nprofile",
+  "type": "object",
+  "required": ["model", "paradigm"],
+  "additionalProperties": true,
+  "properties": {
+    "model": { "type": "string", "maxLength": 200 },
+    "paradigm": { "type": "string", "maxLength": 64 },
+    "version": { "type": "string", "maxLength": 64 },
+    "layer": { "enum": ["base", "user"] },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "reference_roles": { "type": "array", "items": { "type": "string" }, "maxItems": 16 },
+        "needs_mask": { "type": "boolean" },
+        "instruction_based": { "type": "boolean" },
+        "supports_negative": { "type": "boolean" }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "max_prompt_tokens": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "params": { "type": "object" }
+      }
+    },
+    "style_rules": { "type": "array", "items": { "type": "string", "maxLength": 500 }, "maxItems": 64 },
+    "templates": { "type": "object" },
+    "preservation_clause": { "type": "string", "maxLength": 1000 },
+    "negative_defaults": { "type": "string", "maxLength": 1000 },
+    "exemplars": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "properties": {
+          "intent": { "type": "string", "maxLength": 1000 },
+          "prompt": { "type": "string", "maxLength": 4000 }
+        }
+      }
+    },
+    "notes": { "type": "string", "maxLength": 4000 }
+  }
+}

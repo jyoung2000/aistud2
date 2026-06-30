@@ -221,5 +221,14 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
       reference image+role. Frontend `api/referenceModels.ts` `loadModels()` replaces the
       stub catalog from `/models` (fallback to stub); inspector/compare read the live
       registry. Verified `/models` returns 5 models with flags.
-- [ ] Phase 8 — Model prompt profiles & synthesis
+- [x] **Phase 8** — Prompt profiles & synthesis. `.nprofile` JSON Schema; `profiles/
+      builder.py` (offline base per model from the registry spec — paradigm templates,
+      preservation clause, style rules, constraints); `profiles/store.py` (base+user merge,
+      validate, size-cap, **safety**: machine-introspected paradigm/capabilities/token-cap
+      WIN over imports with warnings — hard cap 1024); `profiles/synth.py` (intent
+      classify incl. text-edit `Replace 'old' with 'new'`, paradigm transform via profile
+      templates + preservation, token-cap enforce). Endpoints `/profiles`, `/profiles/import`
+      (validate+sanitize preview), `/synthesize`. Frontend `api/promptSynthesis.ts` stub
+      mirrors this (swap point). Verified: same intent → different prompts per paradigm;
+      malicious profile clamped+overridden with warnings. requirements add pyyaml/jsonschema.
 - [ ] Phase 9 — Finish & package
