@@ -5,11 +5,12 @@ import {
   fitTransform,
   screenToImage,
   zoomAtPoint,
-  clampZoom,
   type Pt,
   type ViewTransform,
 } from "./coords";
 import { MaskBuffer, opFromModifiers } from "./maskBuffer";
+
+type Tool = "select" | "hand";
 
 function maskToCanvas(mask: MaskBuffer): HTMLCanvasElement {
   const c = document.createElement("canvas");
@@ -47,9 +48,14 @@ export function CanvasStage() {
   const [mask, setMask] = useState<MaskBuffer | null>(null);
   const [cursor, setCursor] = useState<Pt | null>(null);
   const [dash, setDash] = useState(0);
-  const [, force] = useState(0); // re-render after in-place mask edits
+  const [, force] = useState(0);
+  const [tool, setTool] = useState<Tool>("select");
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const [panning, setPanning] = useState(false);
 
-  // viewport measurement
+  // gesture refs (avoid re-renders mid-drag)
+  const drag = useRef<{ start: Pt; startT: ViewTransform; pan: boolean; moved: boolean; down: Pt } | null>(null);
+
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
@@ -70,7 +76,49 @@ export function CanvasStage() {
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const maskCanvas = useMemo(() => (mask && !mask.isEmpty() ? maskToCanvas(mask) : null), [mask, dash === 0]);
+  // keyboard: spacebar temp-hand (ignore autorepeat) + zoom shortcuts
+  useEffect(() => {
+    const center = (): Pt => ({ x: vp.w / 2, y: vp.h / 2 });
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === "Space" && !e.repeat) {
+        // don't hijack space while typing in an input
+        const el = document.activeElement;
+        if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
+        e.preventDefault();
+        setSpaceHeld(true);
+        return;
+      }
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        setT((cur) => zoomAtPoint(cur, center(), 1.2));
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        setT((cur) => zoomAtPoint(cur, center(), 1 / 1.2));
+      } else if (e.key === "0") {
+        e.preventDefault();
+        if (img) setT(fitTransform(img.naturalWidth, img.naturalHeight, vp.w, vp.h));
+      } else if (e.key === "1") {
+        e.preventDefault();
+        setT((cur) => zoomAtPoint(cur, center(), 1 / cur.scale));
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space") setSpaceHeld(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [vp.w, vp.h, img]);
+
+  const maskCanvas = useMemo(
+    () => (mask && !mask.isEmpty() ? maskToCanvas(mask) : null),
+    [mask, force]
+  );
   const loops = useMemo(() => (mask ? mask.outline() : []), [mask, maskCanvas]);
 
   const openFile = (file: File) => {
@@ -85,43 +133,65 @@ export function CanvasStage() {
     image.src = url;
   };
 
-  const onWheelZoom = (e: any) => {
+  const ptr = (e: any): Pt | null => e.target.getStage()?.getPointerPosition() ?? null;
+
+  const onWheel = (e: any) => {
     e.evt.preventDefault();
-    const stage = e.target.getStage();
-    const p = stage.getPointerPosition();
+    const p = ptr(e);
     if (!p) return;
-    const factor = e.evt.deltaY < 0 ? 1.1 : 1 / 1.1;
+    const factor = e.evt.deltaY < 0 ? 1.1 : 1 / 1.1; // zoom to cursor
     setT((cur) => zoomAtPoint(cur, p, factor));
   };
 
-  const pointerImage = (e: any): Pt | null => {
-    const stage = e.target.getStage();
-    const p = stage?.getPointerPosition();
-    return p ? screenToImage(p, t) : null;
+  const wantPan = (button: number) => spaceHeld || tool === "hand" || button === 1;
+
+  const onMouseDown = (e: any) => {
+    const p = ptr(e);
+    if (!p || !img) return;
+    const pan = wantPan(e.evt.button);
+    drag.current = { start: p, startT: t, pan, moved: false, down: p };
+    if (pan) {
+      e.evt.preventDefault();
+      setPanning(true);
+    }
   };
 
-  const onMouseMove = (e: any) => setCursor(pointerImage(e));
-
-  const onClick = (e: any) => {
-    if (!mask || !img) return;
-    const ip = pointerImage(e);
-    if (!ip) return;
-    // Temporary demo "stamp" so the shared mask + ops + marching ants are exercisable
-    // before the real select tools (Phase 3+). Radius scales with image size.
-    const radius = Math.max(8, Math.min(mask.width, mask.height) * 0.06);
-    const op = opFromModifiers(e.evt.shiftKey, e.evt.altKey);
-    mask.apply(stampDisc(mask, ip, radius), op);
-    // image-space click log (checkpoint #1: identical across zooms)
-    // eslint-disable-next-line no-console
-    console.log(`click image-space: (${ip.x.toFixed(2)}, ${ip.y.toFixed(2)}) @ ${(t.scale * 100).toFixed(0)}%`);
-    force((n) => n + 1);
+  const onMouseMove = (e: any) => {
+    const p = ptr(e);
+    const d = drag.current;
+    if (d && p) {
+      if (Math.hypot(p.x - d.down.x, p.y - d.down.y) > 3) d.moved = true;
+      if (d.pan) {
+        setT({ scale: d.startT.scale, x: d.startT.x + (p.x - d.start.x), y: d.startT.y + (p.y - d.start.y) });
+        return;
+      }
+    }
+    setCursor(p ? screenToImage(p, t) : null);
   };
 
-  const setZoom = (factor: number) =>
-    setT((cur) => zoomAtPoint(cur, { x: vp.w / 2, y: vp.h / 2 }, factor));
-  const fit = () => img && setT(fitTransform(img.naturalWidth, img.naturalHeight, vp.w, vp.h));
-  const actual = () =>
-    setT((cur) => ({ ...zoomAtPoint(cur, { x: vp.w / 2, y: vp.h / 2 }, clampZoom(1) / cur.scale) }));
+  const endDrag = (e: any) => {
+    const d = drag.current;
+    const p = ptr(e);
+    if (d && !d.pan && !d.moved && p && mask && img) {
+      // temporary select stamp (until Phase 3) — exercises shared mask + ops + ants
+      const ip = screenToImage(p, t);
+      const radius = Math.max(8, Math.min(mask.width, mask.height) * 0.06);
+      mask.apply(stampDisc(mask, ip, radius), opFromModifiers(e.evt.shiftKey, e.evt.altKey));
+      // eslint-disable-next-line no-console
+      console.log(`click image-space: (${ip.x.toFixed(2)}, ${ip.y.toFixed(2)}) @ ${(t.scale * 100).toFixed(0)}%`);
+      force((n) => n + 1);
+    }
+    drag.current = null;
+    setPanning(false);
+  };
+
+  const cursorStyle = !img
+    ? "default"
+    : panning
+    ? "grabbing"
+    : spaceHeld || tool === "hand"
+    ? "grab"
+    : "crosshair";
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -129,11 +199,13 @@ export function CanvasStage() {
         zoom={t.scale}
         cursor={cursor}
         hasImage={!!img}
+        tool={tool}
+        onTool={setTool}
         onOpen={openFile}
-        onIn={() => setZoom(1.25)}
-        onOut={() => setZoom(1 / 1.25)}
-        onFit={fit}
-        onActual={actual}
+        onIn={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1.25))}
+        onOut={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1 / 1.25))}
+        onFit={() => img && setT(fitTransform(img.naturalWidth, img.naturalHeight, vp.w, vp.h))}
+        onActual={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1 / c.scale))}
       />
       <div ref={wrapRef} style={{ flex: 1, position: "relative", background: "#0a0c0f", minHeight: 0 }}>
         {!img && (
@@ -148,11 +220,15 @@ export function CanvasStage() {
           scaleY={t.scale}
           x={t.x}
           y={t.y}
-          onWheel={onWheelZoom}
+          onWheel={onWheel}
+          onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
-          onMouseLeave={() => setCursor(null)}
-          onClick={onClick}
-          style={{ cursor: img ? "crosshair" : "default" }}
+          onMouseUp={endDrag}
+          onMouseLeave={(e: any) => {
+            setCursor(null);
+            if (drag.current) endDrag(e);
+          }}
+          style={{ cursor: cursorStyle }}
         >
           <Layer imageSmoothingEnabled={t.scale < 4}>
             {img && <KImage image={img} x={0} y={0} />}
@@ -181,6 +257,8 @@ function ZoomBar({
   zoom,
   cursor,
   hasImage,
+  tool,
+  onTool,
   onOpen,
   onIn,
   onOut,
@@ -190,6 +268,8 @@ function ZoomBar({
   zoom: number;
   cursor: Pt | null;
   hasImage: boolean;
+  tool: Tool;
+  onTool: (t: Tool) => void;
   onOpen: (f: File) => void;
   onIn: () => void;
   onOut: () => void;
@@ -206,6 +286,12 @@ function ZoomBar({
     fontSize: 12,
     cursor: "pointer",
   };
+  const toolBtn = (active: boolean): React.CSSProperties => ({
+    ...btn,
+    background: active ? "#22d3ee22" : btn.background,
+    borderColor: active ? "#22d3ee" : "#2a2f37",
+    color: active ? "#22d3ee" : "#cbd5e1",
+  });
   return (
     <div
       style={{
@@ -231,12 +317,17 @@ function ZoomBar({
         Open image
       </button>
       <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
+      <button style={toolBtn(tool === "select")} onClick={() => onTool("select")} title="Select (V)">
+        ⬚ Select
+      </button>
+      <button style={toolBtn(tool === "hand")} onClick={() => onTool("hand")} title="Hand — pan (H, or hold Space)">
+        ✋ Hand
+      </button>
+      <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
       <button style={btn} disabled={!hasImage} onClick={onOut}>
         −
       </button>
-      <span style={{ width: 52, textAlign: "center", color: "#e2e8f0" }}>
-        {(zoom * 100).toFixed(0)}%
-      </span>
+      <span style={{ width: 52, textAlign: "center", color: "#e2e8f0" }}>{(zoom * 100).toFixed(0)}%</span>
       <button style={btn} disabled={!hasImage} onClick={onIn}>
         +
       </button>

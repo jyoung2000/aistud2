@@ -174,7 +174,10 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
       boundary tracing), `canvas/canvasStage.tsx` (Konva: image open, zoom bar, coord
       readout, cyan mask overlay + animated ants). Pure logic unit-tested (round-trip,
       zoom-invariance, ops, outline). Temporary click-stamp exercises the mask until Phase 3.
-- [ ] Phase 2 — Navigation (zoom & pan)
+- [x] **Phase 2** — Navigation. Wheel zoom-to-pointer (pixel under cursor fixed), keyboard
+      Cmd/Ctrl +/−/0(fit)/1(100%) about center, zoom-bar buttons. Pan: Hand tool, spacebar
+      temp-hand (autorepeat-guarded, ignored while typing), middle-mouse drag; grab/grabbing
+      cursors; 3px move threshold separates click-select from drag-pan. (`canvas/canvasStage.tsx`)
 - [ ] Phase 3 — Smart select (SAM 2) + refine
 - [ ] Phase 4 — Lasso tools (freehand / polygonal / magnetic live-wire)
 - [ ] Phase 5 — Manual editable selection (pen-grade)
