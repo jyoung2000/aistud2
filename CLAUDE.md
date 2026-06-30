@@ -168,7 +168,12 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
 - [x] **Phase 0** — Shell & handshake (sidecar `/health`, port discovery, Tauri spawn,
       frontend status bar, clean shutdown). Verified here: sidecar boots + `/health` on
       CPU, frontend builds. Verify on 4070: GPU name in badge, desktop window, no orphan.
-- [ ] Phase 1 — Canvas & coordinate core
+- [x] **Phase 1** — Canvas & coordinate core. `canvas/coords.ts` (screenToImage/
+      imageToScreen/zoomAtPoint/fitTransform, clamp 1%–3200%), `canvas/maskBuffer.ts`
+      (shared image-space mask, 4 boolean ops, bbox/area, marching-ants `outline()` via
+      boundary tracing), `canvas/canvasStage.tsx` (Konva: image open, zoom bar, coord
+      readout, cyan mask overlay + animated ants). Pure logic unit-tested (round-trip,
+      zoom-invariance, ops, outline). Temporary click-stamp exercises the mask until Phase 3.
 - [ ] Phase 2 — Navigation (zoom & pan)
 - [ ] Phase 3 — Smart select (SAM 2) + refine
 - [ ] Phase 4 — Lasso tools (freehand / polygonal / magnetic live-wire)

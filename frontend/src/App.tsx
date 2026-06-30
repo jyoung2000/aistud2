@@ -4,6 +4,7 @@ import { waitForSidecar } from "./api/sidecar";
 import { StatusBar, type SidecarState } from "./panels/statusBar";
 import { InspectorPipeline } from "./panels/inspectorPipeline";
 import { SettingsModal } from "./panels/settingsModal";
+import { CanvasStage } from "./canvas/canvasStage";
 
 export default function App() {
   const [state, setState] = useState<SidecarState>({ kind: "connecting" });
@@ -67,32 +68,7 @@ export default function App() {
       </header>
 
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-        <main
-          style={{
-            flex: 1,
-            display: "grid",
-            placeItems: "center",
-            color: "#64748b",
-          }}
-        >
-          {state.kind === "connected" ? (
-            <div style={{ textAlign: "center", lineHeight: 1.6 }}>
-              <div>Phase 0 — shell &amp; handshake ✓</div>
-              <div style={{ fontSize: 12 }}>
-                device: <b style={{ color: "#e2e8f0" }}>{state.health.device}</b>
-                {state.health.gpu_name ? ` · ${state.health.gpu_name}` : ""}
-              </div>
-              <div style={{ fontSize: 11, marginTop: 8, color: "#475569" }}>
-                Canvas arrives in Phase 1. Reference block (M1) is in the inspector →
-              </div>
-            </div>
-          ) : state.kind === "error" ? (
-            <div style={{ color: "#ef4444" }}>{state.message}</div>
-          ) : (
-            <div>starting…</div>
-          )}
-        </main>
-
+        <CanvasStage />
         <InspectorPipeline />
       </div>
 
