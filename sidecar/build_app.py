@@ -35,16 +35,18 @@ def main() -> None:
             "  npm --prefix frontend run build"
         )
 
-    # PyInstaller --add-data uses ';' on Windows, ':' elsewhere. Bundle dist as 'web'.
+    # PyInstaller --add-data uses ';' on Windows, ':' elsewhere. Bundle dist as 'web' and
+    # the profile schema (a data file PyInstaller won't collect on its own).
     sep = ";" if sys.platform.startswith("win") else ":"
-    add_data = f"{DIST}{sep}web"
+    schema = SIDECAR / "app" / "profiles" / "schema.json"
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean", "--onefile",
         "--windowed",                 # no console window; macOS gets a .app bundle
         "--name", APP_NAME,
-        "--add-data", add_data,
+        "--add-data", f"{DIST}{sep}web",
+        "--add-data", f"{schema}{sep}app/profiles",
         "--paths", str(SIDECAR),
         str(SIDECAR / "app" / "desktop.py"),
     ]

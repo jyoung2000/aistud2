@@ -44,11 +44,14 @@ def main() -> None:
     ext = ".exe" if sys.platform.startswith("win") else ""
     OUT.mkdir(parents=True, exist_ok=True)
 
+    sep = ";" if sys.platform.startswith("win") else ":"
+    schema = SIDECAR / "app" / "profiles" / "schema.json"
     subprocess.check_call(
         [
             sys.executable, "-m", "PyInstaller",
             "--noconfirm", "--clean", "--onefile",
             "--name", BIN_BASE,
+            "--add-data", f"{schema}{sep}app/profiles",
             "--paths", str(SIDECAR),
             str(SIDECAR / "app" / "main.py"),
         ],

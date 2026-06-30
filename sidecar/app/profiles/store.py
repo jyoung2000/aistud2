@@ -24,13 +24,29 @@ MAX_PROFILE_BYTES = 256_000
 
 _DIR = Path(__file__).parent
 STORE_DIR = _DIR / "store"
-SCHEMA = json.loads((_DIR / "schema.json").read_text("utf-8"))
+_SCHEMA_CACHE: dict | None = None
+
+
+def _schema() -> dict | None:
+    """Load schema.json lazily; tolerate a missing bundled data file (degrade, don't crash)."""
+    global _SCHEMA_CACHE
+    if _SCHEMA_CACHE is None:
+        p = _DIR / "schema.json"
+        if p.exists():
+            _SCHEMA_CACHE = json.loads(p.read_text("utf-8"))
+        else:
+            print("[profiles] schema.json not bundled; skipping strict validation")
+            _SCHEMA_CACHE = {}
+    return _SCHEMA_CACHE or None
 
 
 def _validate(profile: dict) -> None:
+    schema = _schema()
+    if not schema:
+        return
     import jsonschema  # local import keeps startup light
 
-    jsonschema.validate(profile, SCHEMA)
+    jsonschema.validate(profile, schema)
 
 
 def base_profile(model_id: str) -> dict:

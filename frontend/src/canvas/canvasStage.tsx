@@ -40,6 +40,14 @@ import { COLOR_GENERATION } from "../constants";
 type Tool = "select" | "lasso" | "pen" | "hand";
 type LassoMode = "free" | "poly" | "magnetic";
 
+function downloadBlob(blob: Blob, name: string) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
 function maskToCanvas(mask: MaskBuffer): HTMLCanvasElement {
   const c = document.createElement("canvas");
   c.width = mask.width;
@@ -206,6 +214,26 @@ export function CanvasStage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tool, lassoPts, lassoMode, pen, penSel, mask]);
 
+  // undo/redo keyboard (fresh closures via deps; zoom/pan are NOT on the stack)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = document.activeElement;
+      if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      if (e.key === "z" || e.key === "Z") {
+        e.preventDefault();
+        e.shiftKey ? redo() : undo();
+      } else if (e.key === "y" || e.key === "Y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mask, img, imageId, backend]);
+
   const maskCanvas = useMemo(
     () => (mask && !mask.isEmpty() ? maskToCanvas(mask) : null),
     [mask]
@@ -253,6 +281,7 @@ export function CanvasStage() {
     box: [number, number, number, number] | null
   ) => {
     if (!imageId || !mask) return;
+    pushHistory();
     setSamPoints(points);
     setBusy(true);
     try {
@@ -268,6 +297,7 @@ export function CanvasStage() {
 
   const runRefine = async () => {
     if (!imageId || !mask || mask.isEmpty()) return;
+    pushHistory();
     setBusy(true);
     try {
       const data = await refineMask(imageId, mask.data, mask.width, mask.height);
@@ -390,6 +420,7 @@ export function CanvasStage() {
       cancelLasso();
       return;
     }
+    pushHistory();
     const inc = rasterizePolygon(pts, mask.width, mask.height);
     const next = mask.clone();
     next.apply(inc, lassoOp.current);
@@ -545,6 +576,7 @@ export function CanvasStage() {
       cancelPen();
       return;
     }
+    pushHistory();
     const poly = flattenPath({ ...pen, closed: true });
     const next = mask.clone();
     next.apply(rasterizePolygon(poly, mask.width, mask.height), penOp.current);
@@ -553,14 +585,75 @@ export function CanvasStage() {
   };
   const invertMask = () => {
     if (!mask) return;
+    pushHistory();
     const next = mask.clone();
     next.invert();
     setMask(next);
   };
 
+  // --- history (undo/redo) — selection commits + edits only; zoom/pan stay off the stack ---
+  type Snap = { mask: MaskBuffer | null; img: HTMLImageElement | null; imageId: string | null; backend: string | null };
+  const undoStack = useRef<Snap[]>([]);
+  const redoStack = useRef<Snap[]>([]);
+  const [, setHistTick] = useState(0);
+  const snapshot = (): Snap => ({ mask: mask ? mask.clone() : null, img, imageId, backend });
+  const pushHistory = () => {
+    undoStack.current.push(snapshot());
+    if (undoStack.current.length > 50) undoStack.current.shift();
+    redoStack.current = [];
+    setHistTick((n) => n + 1);
+  };
+  const restore = (s: Snap) => {
+    setMask(s.mask ? s.mask.clone() : null);
+    setImg(s.img);
+    setImageId(s.imageId);
+    setBackend(s.backend);
+    setSamPoints([]);
+    cancelLasso();
+    cancelPen();
+    setHistTick((n) => n + 1);
+  };
+  const undo = () => {
+    const s = undoStack.current.pop();
+    if (!s) return;
+    redoStack.current.push(snapshot());
+    restore(s);
+  };
+  const redo = () => {
+    const s = redoStack.current.pop();
+    if (!s) return;
+    undoStack.current.push(snapshot());
+    restore(s);
+  };
+
+  // --- export ---
+  const exportPng = () => {
+    if (!img) return;
+    const c = document.createElement("canvas");
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    c.getContext("2d")!.drawImage(img, 0, 0);
+    c.toBlob((b) => b && downloadBlob(b, "neuclip-export.png"), "image/png");
+  };
+  const exportCutout = () => {
+    if (!img || !mask || mask.isEmpty()) return;
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext("2d")!;
+    ctx.drawImage(img, 0, 0);
+    const id = ctx.getImageData(0, 0, w, h);
+    for (let i = 0; i < mask.data.length; i++) id.data[i * 4 + 3] = mask.data[i] ? 255 : 0;
+    ctx.putImageData(id, 0, 0);
+    c.toBlob((b) => b && downloadBlob(b, "neuclip-cutout.png"), "image/png");
+  };
+
   // crop -> (mock model) -> feathered composite; result becomes the new base image.
   const generateNow = async () => {
     if (!imageId || !mask || mask.isEmpty()) return;
+    pushHistory();
     const maskPng = maskToPngDataUrl(mask.data, mask.width, mask.height);
     setGenStatus("busy");
     try {
@@ -615,9 +708,18 @@ export function CanvasStage() {
         canRefine={!!mask && !mask.isEmpty()}
         onRefine={runRefine}
         onClearSel={() => {
-          if (mask) setMask(new MaskBuffer(mask.width, mask.height));
+          if (mask && !mask.isEmpty()) {
+            pushHistory();
+            setMask(new MaskBuffer(mask.width, mask.height));
+          }
           setSamPoints([]);
         }}
+        canUndo={undoStack.current.length > 0}
+        canRedo={redoStack.current.length > 0}
+        onUndo={undo}
+        onRedo={redo}
+        onExport={exportPng}
+        onExportCutout={exportCutout}
         onOpen={openFile}
         onIn={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1.25))}
         onOut={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1 / 1.25))}
@@ -898,6 +1000,12 @@ function ZoomBar({
   onLassoMode,
   selPct,
   onInvert,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+  onExport,
+  onExportCutout,
   backend,
   busy,
   canRefine,
@@ -918,6 +1026,12 @@ function ZoomBar({
   onLassoMode: (m: LassoMode) => void;
   selPct: number;
   onInvert: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+  onExport: () => void;
+  onExportCutout: () => void;
   backend: string | null;
   busy: boolean;
   canRefine: boolean;
@@ -1019,6 +1133,19 @@ function ZoomBar({
       {selPct > 0 && (
         <span style={{ fontSize: 10.5, color: "#22d3ee" }}>sel {selPct.toFixed(1)}%</span>
       )}
+      <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
+      <button style={btn} disabled={!canUndo} onClick={onUndo} title="Undo (Cmd/Ctrl+Z)">
+        ↶
+      </button>
+      <button style={btn} disabled={!canRedo} onClick={onRedo} title="Redo (Cmd/Ctrl+Shift+Z)">
+        ↷
+      </button>
+      <button style={btn} disabled={!hasImage} onClick={onExport} title="Export PNG">
+        Export
+      </button>
+      <button style={btn} disabled={!canRefine} onClick={onExportCutout} title="Export selection as transparent PNG">
+        Cutout
+      </button>
       {hasImage && backend && (
         <span
           style={{

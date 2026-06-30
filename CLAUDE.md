@@ -231,4 +231,12 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
       (validate+sanitize preview), `/synthesize`. Frontend `api/promptSynthesis.ts` stub
       mirrors this (swap point). Verified: same intent → different prompts per paradigm;
       malicious profile clamped+overridden with warnings. requirements add pyyaml/jsonschema.
-- [ ] Phase 9 — Finish & package
+- [x] **Phase 9** — Finish & package. Undo/redo for selection commits + edits (50-deep
+      snapshot stack of mask+image+imageId; Cmd/Ctrl+Z / Shift+Z / Ctrl+Y; zoom/pan stay OFF
+      the stack). Export PNG (full) + Cutout (selection as transparent alpha). Packaging:
+      `build_app.py` single-file app bundles the UI + the profile `schema.json` data file
+      (PyInstaller doesn't collect data files automatically) — frozen app verified serving
+      `/`, `/health`, `/models`, `/profiles`, `/synthesize` and the full select→generate
+      loop with cv2/scipy/yaml/jsonschema bundled. `build_sidecar.py` (Tauri externalBin)
+      bundles the same data. `store.py` schema load made lazy/tolerant. CI: `app.yml`
+      (single-file, all OSes) + `release.yml` (Tauri installers, manual).
