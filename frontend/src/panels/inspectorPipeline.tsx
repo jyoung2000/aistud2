@@ -1,26 +1,35 @@
 import { useMemo, useState } from "react";
 import { COLOR_GENERATION } from "../constants";
-import { STUB_MODELS, type ModelRefCaps } from "../api/referenceModels";
+import { STUB_MODELS, modelById, type ModelRefCaps } from "../api/referenceModels";
 import {
   ReferenceBlock,
   defaultReferenceState,
   type ReferenceState,
 } from "./referenceBlock";
+import { ModelCompare, ParadigmBadge } from "./modelCompare";
 
-// Minimal "Model & params" step of the inspector pipeline. In M1 this is a stub host so
-// the Reference block can be built and verified standalone; Phases 6–8 replace the stub
-// model list with the real registry and add the prompt / params / queue controls.
+// Minimal "Model & params" step of the inspector pipeline. Stub host so the Reference
+// block (M1) and Compare mode (shootout M1) can be built and verified standalone;
+// Phases 6–8 replace the stub model list with the real registry and add the prompt /
+// params / queue controls and the actual N-way run.
 export function InspectorPipeline() {
+  const [compareMode, setCompareMode] = useState(false);
   const [modelId, setModelId] = useState(STUB_MODELS[0].id);
+  const [comparisonSet, setComparisonSet] = useState<string[]>([
+    STUB_MODELS[0].id,
+    STUB_MODELS[2].id,
+  ]);
+
+  // The reference block needs one model. In compare mode it follows the first selected
+  // model (the "primary"); otherwise the single active model.
+  const primaryId = compareMode ? comparisonSet[0] ?? STUB_MODELS[0].id : modelId;
   const model = useMemo<ModelRefCaps>(
-    () => STUB_MODELS.find((m) => m.id === modelId) ?? STUB_MODELS[0],
-    [modelId]
+    () => modelById(primaryId) ?? STUB_MODELS[0],
+    [primaryId]
   );
 
-  // Reference state is keyed per model so switching models resets to that model's
-  // best-supported role (M1 behavior; M2 filters the toggle by capability).
   const [refByModel, setRefByModel] = useState<Record<string, ReferenceState>>({});
-  const refState = refByModel[modelId] ?? defaultReferenceState(model);
+  const refState = refByModel[primaryId] ?? defaultReferenceState(model);
 
   return (
     <aside
@@ -37,40 +46,76 @@ export function InspectorPipeline() {
         gap: 14,
       }}
     >
-      <div style={{ fontSize: 11, letterSpacing: 1, color: "#64748b", fontWeight: 700 }}>
-        MODEL &amp; PARAMS
-      </div>
-
-      <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <span style={{ fontSize: 11, color: COLOR_GENERATION, fontWeight: 600 }}>Model</span>
-        <select
-          value={modelId}
-          onChange={(e) => setModelId(e.target.value)}
+      <div style={{ display: "flex", alignItems: "center" }}>
+        <div style={{ fontSize: 11, letterSpacing: 1, color: "#64748b", fontWeight: 700 }}>
+          MODEL &amp; PARAMS
+        </div>
+        <button
+          onClick={() => setCompareMode((v) => !v)}
+          title="Run the same edit across multiple models"
           style={{
-            background: "#15181d",
-            color: "#e2e8f0",
-            border: "1px solid #2a2f37",
-            borderRadius: 6,
-            padding: "7px 8px",
-            fontSize: 12,
+            marginLeft: "auto",
+            fontSize: 10.5,
+            fontWeight: 700,
+            padding: "3px 8px",
+            borderRadius: 999,
+            cursor: "pointer",
+            border: `1px solid ${compareMode ? COLOR_GENERATION : "#2a2f37"}`,
+            background: compareMode ? COLOR_GENERATION : "transparent",
+            color: compareMode ? "#1a160e" : "#94a3b8",
           }}
         >
-          {STUB_MODELS.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-        <span style={{ fontSize: 10.5, color: "#5b6470" }}>
-          supports: {model.reference_roles.join(" · ")}
-        </span>
-      </label>
+          COMPARE
+        </button>
+      </div>
+
+      {compareMode ? (
+        <ModelCompare set={comparisonSet} onChange={setComparisonSet} />
+      ) : (
+        <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <span style={{ fontSize: 11, color: COLOR_GENERATION, fontWeight: 600 }}>Model</span>
+          <select
+            value={modelId}
+            onChange={(e) => setModelId(e.target.value)}
+            style={{
+              background: "#15181d",
+              color: "#e2e8f0",
+              border: "1px solid #2a2f37",
+              borderRadius: 6,
+              padding: "7px 8px",
+              fontSize: 12,
+            }}
+          >
+            {STUB_MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+          <span
+            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: "#5b6470" }}
+          >
+            <ParadigmBadge paradigm={model.paradigm} />
+            {model.reference_roles.length > 0
+              ? `reference: ${model.reference_roles.join(" · ")}`
+              : "no reference role"}
+          </span>
+        </label>
+      )}
 
       <ReferenceBlock
         model={model}
         value={refState}
-        onChange={(next) => setRefByModel((prev) => ({ ...prev, [modelId]: next }))}
+        onChange={(next) => setRefByModel((prev) => ({ ...prev, [primaryId]: next }))}
       />
+
+      {compareMode && (
+        <p style={{ margin: 0, fontSize: 10.5, color: "#5b6470", lineHeight: 1.4 }}>
+          Reference applies to the primary model (<b>{model.label}</b>). Each model in the
+          set is prompted from its own profile; the selection, reference, send region, and
+          intent are held identical (fairness contract).
+        </p>
+      )}
     </aside>
   );
 }

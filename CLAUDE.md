@@ -73,6 +73,44 @@ must be just another table entry.
 - Reference-feature milestones: [x] M1 UI (stubbed) · [ ] M2 routing · [ ] M3 replace
   e2e · [ ] M4 pose preprocess+transfer · [ ] M5 profiles+style. (Builds on Phases 6–8.)
 
+## Multi-model compare ("shootout")
+Run one edit across 2..N models at once, each prompted from its own research profile, then
+compare and keep the best. **Fairness contract — hold identical across every model in a
+run:** same selection mask, same reference image + role, same intent text, and the **same
+send region computed as the union of what each model needs** (a pose model needs the full
+subject, an inpaint model a tight crop → send a region sufficient for all). The ONLY
+variables are the model + its independently-synthesized tuned prompt. **Seed caveat:** lock
+a seed per model for re-runs, but seeds are NOT comparable across architectures — say so in
+the UI ("seeds locked per model for re-runs; not comparable across models").
+- Compare mode adds `comparisonSet: string[]` to app state; cap at `MAX_COMPARE` (6).
+  Comparison is intentional spend — the cost card always shows the aggregate + per-model
+  breakdown + quick deselect.
+- Fan out N jobs concurrently; each has its own poll loop, latency, cost, error handling.
+  Partial failure is normal (a failed tile shows reason + retry, never blocks the rest).
+  Composite each result through the shared feathered alpha so every tile previews finished.
+- Pick a winner → composite into canvas + history, save the "shootout" group, and append
+  `(intent → winning prompt)` to the winning model's `exemplars` (user layer) to improve
+  future synthesis. Optional advisory vision judge (toggle) ranks intent-adherence +
+  unselected-region integrity; human always picks.
+- `ShootoutRun` shape:
+  ```ts
+  type ShootoutRun = {
+    id: string;
+    input: { maskId: string; intent: string; reference?: RefSpec;
+             sendRegion: [number, number, number, number] };
+    jobs: { slug: string; paradigm: string; prompt: string; ruleNote?: string;
+            status: 'synth' | 'polling' | 'done' | 'failed';
+            predictionId?: string; latencyMs?: number; costCents?: number;
+            resultUrl?: string; score?: number; error?: string }[];
+    winner?: string; // slug
+  };
+  ```
+- Frontend: `panels/modelCompare.tsx` (set selection + chips + cost card),
+  `panels/inspectorPipeline.tsx` hosts the COMPARE toggle. Paradigm/cost stubbed in
+  `api/referenceModels.ts` until the real registry (Phase 7).
+- Shootout milestones: [x] M1 compare-set UI · [ ] M2 N-prompt synthesis · [ ] M3 parallel
+  run+queue · [ ] M4 comparison view · [ ] M5 commit+feedback · [ ] M6 auto-rank.
+
 ## Launching / packaging
 - **Consumer install (endgame):** `tauri build` → Windows `.msi`/NSIS `.exe`, macOS
   `.dmg`/`.app` (double-click, no terminal). Built per-OS in CI (`.github/workflows/

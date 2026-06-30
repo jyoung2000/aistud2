@@ -13,11 +13,19 @@ export type ReferenceInput = "controlnet" | "multi_image";
 export interface ModelRefCaps {
   id: string;
   label: string;
+  /** Generation paradigm — drives prompt synthesis (instruction | inpaint | controlnet |
+   *  reference/character). Shown as a badge in the picker. */
+  paradigm: string;
+  /** Rough per-generation cost estimate in cents (stub until real pricing in M1/Phase 7). */
+  estCostCents: number;
   /** Roles this model supports, in preference order (first = best supported). */
   reference_roles: ReferenceRole[];
   /** Per-role: which input field the adapter attaches the processed reference to. */
   reference_inputs: Partial<Record<ReferenceRole, ReferenceInput>>;
 }
+
+/** Max models in a comparison set (shootout). Comparison is intentional spend. */
+export const MAX_COMPARE = 6;
 
 export const ROLE_LABELS: Record<ReferenceRole, string> = {
   replace: "Replace",
@@ -37,22 +45,56 @@ export const STUB_MODELS: ModelRefCaps[] = [
   {
     id: "qwen-image-edit-plus",
     label: "Qwen-Image-Edit-Plus",
+    paradigm: "instruction",
+    estCostCents: 0.9,
     reference_roles: ["replace", "pose"],
     reference_inputs: { replace: "multi_image", pose: "multi_image" },
   },
   {
+    id: "qwen-image-edit-2511",
+    label: "Qwen-Image-Edit",
+    paradigm: "instruction",
+    estCostCents: 0.8,
+    reference_roles: ["replace"],
+    reference_inputs: { replace: "multi_image" },
+  },
+  {
+    id: "flux-fill",
+    label: "FLUX Fill",
+    paradigm: "inpaint",
+    estCostCents: 1.2,
+    reference_roles: [],
+    reference_inputs: {},
+  },
+  {
+    id: "flux-kontext",
+    label: "FLUX Kontext",
+    paradigm: "instruction",
+    estCostCents: 1.0,
+    reference_roles: [],
+    reference_inputs: {},
+  },
+  {
     id: "ideogram-character",
     label: "Ideogram Character",
+    paradigm: "reference/character",
+    estCostCents: 1.1,
     reference_roles: ["replace"],
     reference_inputs: { replace: "multi_image" },
   },
   {
     id: "zimage-controlnet-pose",
     label: "Z-Image-Turbo ControlNet (pose)",
+    paradigm: "controlnet",
+    estCostCents: 0.7,
     reference_roles: ["pose"],
     reference_inputs: { pose: "controlnet" },
   },
 ];
+
+export function modelById(id: string): ModelRefCaps | undefined {
+  return STUB_MODELS.find((m) => m.id === id);
+}
 
 /** The role a model "best supports" — first entry in its reference_roles. */
 export function defaultRoleFor(model: ModelRefCaps): ReferenceRole {
