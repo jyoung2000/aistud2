@@ -112,8 +112,14 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
 - Frontend: `panels/modelCompare.tsx` (set selection + chips + cost card),
   `panels/inspectorPipeline.tsx` hosts the COMPARE toggle. Paradigm/cost stubbed in
   `api/referenceModels.ts` until the real registry (Phase 7).
-- Shootout milestones: [x] M1 compare-set UI · [ ] M2 N-prompt synthesis · [ ] M3 parallel
+- Shootout milestones: [x] M1 compare-set UI · [x] M2 N-prompt synthesis · [ ] M3 parallel
   run+queue · [ ] M4 comparison view · [ ] M5 commit+feedback · [ ] M6 auto-rank.
+  M2: one shared intent (+ optional subject + shared reference role) → one tuned prompt per
+  model via `api/promptSynthesis.ts` `synthesize()` (paradigm transform: instruction =
+  imperative+preservation, inpaint = result-description, controlnet = identity+control,
+  reference = identity+ref-slot), each annotated with the rule that fired. UI:
+  `panels/tunedPrompts.tsx` in the COMPARE pane. STUB synthesis — real vision-grounded
+  version is the sidecar `profiles/synth.py` (Phase 8); signature kept stable for the swap.
 
 ## Launching / packaging
 - **Easy path — single-file app (DEFAULT consumer artifact):** one self-contained binary

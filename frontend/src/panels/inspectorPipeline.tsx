@@ -7,6 +7,7 @@ import {
   type ReferenceState,
 } from "./referenceBlock";
 import { ModelCompare, ParadigmBadge } from "./modelCompare";
+import { TunedPrompts } from "./tunedPrompts";
 
 // Minimal "Model & params" step of the inspector pipeline. Stub host so the Reference
 // block (M1) and Compare mode (shootout M1) can be built and verified standalone;
@@ -19,6 +20,8 @@ export function InspectorPipeline() {
     STUB_MODELS[0].id,
     STUB_MODELS[2].id,
   ]);
+  const [intent, setIntent] = useState("");
+  const [subject, setSubject] = useState("");
 
   // The reference block needs one model. In compare mode it follows the first selected
   // model (the "primary"); otherwise the single active model.
@@ -128,11 +131,20 @@ export function InspectorPipeline() {
       />
 
       {compareMode && (
-        <p style={{ margin: 0, fontSize: 10.5, color: "#5b6470", lineHeight: 1.4 }}>
-          Reference applies to the primary model (<b>{model.label}</b>). Each model in the
-          set is prompted from its own profile; the selection, reference, send region, and
-          intent are held identical (fairness contract).
-        </p>
+        <>
+          <p style={{ margin: 0, fontSize: 10.5, color: "#5b6470", lineHeight: 1.4 }}>
+            Reference applies to the primary model (<b>{model.label}</b>) and is held
+            identical across the set (fairness contract).
+          </p>
+          <TunedPrompts
+            set={comparisonSet}
+            intent={intent}
+            subject={subject}
+            reference={{ role: refState.role, present: !!refState.file }}
+            onIntent={setIntent}
+            onSubject={setSubject}
+          />
+        </>
       )}
     </aside>
   );
