@@ -80,11 +80,11 @@ def composite_back(
     return out
 
 
-def mock_edit(crop_rgb: np.ndarray, prompt: str) -> np.ndarray:
+def mock_edit(crop_rgb: np.ndarray, prompt: str, seed: int = 0) -> np.ndarray:
     """A deterministic local 'edit' so the full select→generate→composite loop works
     without a WaveSpeed key (used when mock=True or no API key). Warm/cool tint by prompt
-    hash so different prompts visibly differ."""
-    h = (sum(ord(c) for c in prompt) % 6) if prompt else 0
+    hash + seed so different prompts AND seeds visibly differ (for re-roll / variations)."""
+    h = (((sum(ord(c) for c in prompt) if prompt else 0) + int(seed)) % 6)
     shift = np.array([[20, -10, -10], [ -10, 20, -10], [-10, -10, 20],
                       [20, 20, -20], [-20, 20, 20], [20, -20, 20]][h], np.float32)
     out = np.clip(crop_rgb.astype(np.float32) + shift, 0, 255).astype(np.uint8)

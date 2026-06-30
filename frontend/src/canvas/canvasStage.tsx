@@ -114,6 +114,8 @@ export function CanvasStage() {
     grainMatch: true,
     strength: 0.6,
   });
+  const [variations, setVariations] = useState<{ seed: number; url: string }[]>([]);
+  const [varK, setVarK] = useState(4);
 
   // layer document — `img` is the base (never replaced after open); edits become layers.
   const [layers, setLayers] = useState<DocLayer[]>([]);
@@ -714,6 +716,84 @@ export function CanvasStage() {
     c.toBlob((b) => b && downloadBlob(b, "neuclip-cutout.png"), "image/png");
   };
 
+  // --- iterate: re-roll a layer in place, seed variations into a tray ---
+  const reroll = async (id: string) => {
+    const L = layers.find((l) => l.id === id);
+    if (!L || !L.source || !L.mask || !imageId || !img) return;
+    const maskPng = maskToPngDataUrl(L.mask, img.naturalWidth, img.naturalHeight);
+    pushHistory();
+    setGenStatus("busy");
+    try {
+      const seed = (L.source.seed || 0) + 1;
+      const job = await generate(imageId, maskPng, L.source.prompt, {
+        mock: true,
+        harmonize: L.harmonize ?? harmonize,
+        seed,
+      });
+      const done = await runToCompletion(job);
+      if (done.status === "completed" && done.result_png) {
+        layerImgs.current.set(id, await resultToImage(done.result_png));
+        updateLayer(id, {
+          resultUrl: `data:image/png;base64,${done.result_png}`,
+          source: { ...L.source, seed },
+        });
+        setImgVer((v) => v + 1);
+        setGenStatus("done");
+      } else setGenStatus("failed");
+    } catch (e) {
+      console.error("reroll failed:", e);
+      setGenStatus("failed");
+    }
+  };
+
+  const runVariations = async () => {
+    if (!imageId || !mask || mask.isEmpty()) return;
+    const maskPng = maskToPngDataUrl(mask.data, mask.width, mask.height);
+    setGenStatus("busy");
+    setVariations([]);
+    try {
+      const out: { seed: number; url: string }[] = [];
+      for (let i = 1; i <= varK; i++) {
+        const job = await generate(imageId, maskPng, prompt, { mock: true, harmonize, seed: i });
+        const done = await runToCompletion(job);
+        if (done.status === "completed" && done.result_png)
+          out.push({ seed: i, url: `data:image/png;base64,${done.result_png}` });
+      }
+      setVariations(out);
+      setGenStatus(out.length ? "done" : "failed");
+    } catch (e) {
+      console.error("variations failed:", e);
+      setGenStatus("failed");
+    }
+  };
+
+  const pickVariation = async (v: { seed: number; url: string }) => {
+    if (!img || !mask) return;
+    const im = await resultToImage(v.url);
+    const id = newLayerId();
+    layerImgs.current.set(id, im);
+    pushHistory();
+    const n = layers.filter((l) => l.kind === "ai-edit").length + 1;
+    const layer: DocLayer = {
+      id,
+      name: `AI edit ${n}`,
+      visible: true,
+      opacity: 1,
+      blendMode: "normal",
+      kind: "ai-edit",
+      mask: new Uint8Array(mask.data),
+      resultUrl: v.url,
+      source: { model: "mock", prompt, seed: v.seed, params: {}, sendRegion: [0, 0, img.naturalWidth - 1, img.naturalHeight - 1] },
+      harmonize: { ...harmonize },
+    };
+    setLayers((ls) => [...ls, layer]);
+    setActiveLayer(id);
+    setImgVer((vv) => vv + 1);
+    setVariations([]);
+    setMask(new MaskBuffer(img.naturalWidth, img.naturalHeight));
+    setSamPoints([]);
+  };
+
   // --- layer ops ---
   const updateLayer = (id: string, patch: Partial<DocLayer>) =>
     setLayers((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
@@ -948,6 +1028,7 @@ export function CanvasStage() {
           onReorder={reorderLayer}
           onEdit={editLayer}
           onAdjust={setLayerAdjust}
+          onReroll={reroll}
         />
       )}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -1156,6 +1237,11 @@ export function CanvasStage() {
         onGenerate={generateNow}
         harmonize={harmonize}
         onHarmonize={setHarmonize}
+        varK={varK}
+        onVarK={setVarK}
+        onVary={runVariations}
+        variations={variations}
+        onPickVariation={pickVariation}
         history={history}
         onPick={() => {
           /* layers are the source of truth now; result thumbnails are informational */
@@ -1174,6 +1260,11 @@ function GenerateBar({
   onGenerate,
   harmonize,
   onHarmonize,
+  varK,
+  onVarK,
+  onVary,
+  variations,
+  onPickVariation,
   history,
   onPick,
 }: {
@@ -1184,6 +1275,11 @@ function GenerateBar({
   onGenerate: () => void;
   harmonize: HarmonizeOpts;
   onHarmonize: (h: HarmonizeOpts) => void;
+  varK: number;
+  onVarK: (k: number) => void;
+  onVary: () => void;
+  variations: { seed: number; url: string }[];
+  onPickVariation: (v: { seed: number; url: string }) => void;
   history: { url: string; prompt: string }[];
   onPick: (url: string) => void;
 }) {
@@ -1242,10 +1338,41 @@ function GenerateBar({
         >
           Generate
         </button>
+        <button
+          onClick={onVary}
+          disabled={!canGenerate}
+          title="Run K seed variations into the candidate tray"
+          style={{ padding: "8px 10px", borderRadius: 6, border: `1px solid ${A}`, background: "transparent", color: A, cursor: canGenerate ? "pointer" : "default", fontWeight: 700, opacity: canGenerate ? 1 : 0.5 }}
+        >
+          Vary ×
+        </button>
+        <input
+          type="number"
+          min={2}
+          max={6}
+          value={varK}
+          onChange={(e) => onVarK(Math.max(2, Math.min(6, Number(e.target.value))))}
+          style={{ width: 40, background: "#0d0f12", color: "#e2e8f0", border: "1px solid #2a2f37", borderRadius: 5, padding: "6px 4px", fontSize: 12 }}
+        />
         {chip && (
           <span style={{ fontSize: 11, color: chip.c, minWidth: 56 }}>{chip.t}</span>
         )}
       </div>
+
+      {variations.length > 0 && (
+        <div style={{ display: "flex", gap: 6, alignItems: "center", overflowX: "auto" }}>
+          <span style={{ fontSize: 10.5, color: A }}>candidates →</span>
+          {variations.map((v) => (
+            <img
+              key={v.seed}
+              src={v.url}
+              title={`seed ${v.seed} — click to keep`}
+              onClick={() => onPickVariation(v)}
+              style={{ height: 56, borderRadius: 5, border: `1px solid ${A}66`, cursor: "pointer" }}
+            />
+          ))}
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 10.5, color: "#9a8b6a" }}>
         <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
           <input

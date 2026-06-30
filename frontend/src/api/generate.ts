@@ -27,6 +27,7 @@ export interface GenOpts {
   harmonize?: HarmonizeOpts;
   reference_png?: string;
   reference_role?: string;
+  seed?: number;
 }
 
 export async function generate(

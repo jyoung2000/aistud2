@@ -26,6 +26,7 @@ export function LayersPanel({
   onReorder,
   onEdit,
   onAdjust,
+  onReroll,
 }: {
   layers: Layer[];
   activeId: string | null;
@@ -39,6 +40,7 @@ export function LayersPanel({
   onReorder: (id: string, dir: -1 | 1) => void;
   onEdit: (id: string) => void;
   onAdjust: (id: string, adjust: AdjustSpec) => void;
+  onReroll: (id: string) => void;
 }) {
   // Compositing order is bottom→top in the array; display top-first.
   const ordered = [...layers].reverse();
@@ -145,9 +147,14 @@ export function LayersPanel({
                   ))}
                 </select>
                 {(L.kind === "ai-edit" || L.kind === "outpaint") && (
-                  <button onClick={(e) => { e.stopPropagation(); onEdit(L.id); }} title="Edit this layer (load its prompt + region)" style={smallBtn}>
-                    edit
-                  </button>
+                  <>
+                    <button onClick={(e) => { e.stopPropagation(); onReroll(L.id); }} title="Re-roll (new seed, replace in place)" style={smallBtn}>
+                      ↻
+                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); onEdit(L.id); }} title="Edit this layer (load its prompt + region)" style={smallBtn}>
+                      edit
+                    </button>
+                  </>
                 )}
                 <button onClick={(e) => { e.stopPropagation(); onDelete(L.id); }} title="Delete layer" style={{ ...smallBtn, color: "#ef4444" }}>
                   ✕

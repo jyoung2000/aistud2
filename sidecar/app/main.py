@@ -176,6 +176,7 @@ class GenerateIn(BaseModel):
     pad_frac: float = 0.12
     feather: float = 2.5
     params: dict = {}
+    seed: int = 0
     reference_png: Optional[str] = None  # base64 PNG of the reference image
     reference_role: Optional[str] = None  # replace | pose | style
     harmonize: Optional[dict] = None  # {on,colorMatch,relight,grainMatch,strength}
@@ -237,7 +238,7 @@ def generate(body: GenerateIn) -> dict:
     use_real = (not body.mock) and bool(key) and bool(body.model_slug)
     if not use_real:
         # mock path — full loop works without a key; result lands only in the selection.
-        res = compose.mock_edit(crop, body.prompt)
+        res = compose.mock_edit(crop, body.prompt, body.seed)
         res = _maybe_harmonize(session.rgb, region, res, cmask, body.harmonize)
         out = compose.composite_back(session.rgb, region, res, alpha)
         job.mode = "mock"
@@ -251,6 +252,7 @@ def generate(body: GenerateIn) -> dict:
             import base64 as _b64
 
             reference_rgb = imaging.load_rgb(_b64.b64decode(body.reference_png.split(",")[-1]))
+        body.params.setdefault("seed", body.seed)
         slug, payload = registry.build_payload(
             body.model_slug, crop, cmask, body.prompt, body.params, reference_rgb, body.reference_role
         )
