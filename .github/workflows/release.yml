@@ -1,0 +1,82 @@
+name: Release installers
+
+# Push a version tag to build double-click installers for every OS and attach them to a
+# GitHub Release:   git tag v0.1.0 && git push origin v0.1.0
+# (Or run manually from the Actions tab.)
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14      # Apple Silicon
+            args: "--target aarch64-apple-darwin"
+            rust_target: aarch64-apple-darwin
+          - os: macos-13      # Intel
+            args: "--target x86_64-apple-darwin"
+            rust_target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            args: ""
+            rust_target: ""
+          - os: windows-latest
+            args: ""
+            rust_target: ""
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux build deps (Tauri)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev librsvg2-dev libgtk-3-dev \
+            libappindicator3-dev patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        run: npm install --no-audit --no-fund
+        working-directory: frontend
+
+      - name: Freeze the Python sidecar
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r sidecar/requirements.txt pyinstaller
+          python sidecar/build_sidecar.py
+
+      - name: Build app + create release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Neuclip Studio ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
