@@ -67,6 +67,20 @@ if _UI is not None:
     app.mount("/", StaticFiles(directory=str(_UI), html=True), name="ui")
 
 
+def _ensure_streams() -> None:
+    """Guarantee sys.stdout/stderr exist.
+
+    A PyInstaller `--windowed` build on Windows has no console, so sys.stdout/stderr are
+    None. uvicorn's log formatter (and our prints) then crash on `.isatty()` / `.write()`.
+    Point any missing stream at the null device so they behave like a non-tty stream.
+    """
+    devnull = open(os.devnull, "w")
+    if sys.stdout is None:
+        sys.stdout = devnull
+    if sys.stderr is None:
+        sys.stderr = devnull
+
+
 def _bind_port(start: int, host: str = "127.0.0.1", attempts: int = 50) -> int:
     """Find the first free port at/after `start` (fixed-with-fallback)."""
     for offset in range(attempts):
@@ -84,6 +98,7 @@ def _bind_port(start: int, host: str = "127.0.0.1", attempts: int = 50) -> int:
 def main() -> None:
     import uvicorn
 
+    _ensure_streams()
     requested = int(os.environ.get(PORT_ENV, DEFAULT_PORT))
     port = _bind_port(requested)
 
@@ -105,6 +120,7 @@ def serve_app() -> None:
 
     import uvicorn
 
+    _ensure_streams()
     port = _bind_port(int(os.environ.get(PORT_ENV, DEFAULT_PORT)))
     url = f"http://127.0.0.1:{port}"
     print(f"{PORT_STDOUT_PREFIX}{port}", flush=True)
