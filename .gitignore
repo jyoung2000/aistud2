@@ -11,7 +11,8 @@ sidecar/dist/
 
 # node
 frontend/node_modules/
-frontend/dist/
+# NOTE: frontend/dist IS committed so the root double-click launcher can serve the UI
+# with only Python (no Node build step). Rebuild with: npm --prefix frontend run build
 
 # rust / tauri
 src-tauri/target/
@@ -24,6 +25,11 @@ sidecar/app/weights/
 *.pt
 *.pth
 *.safetensors
+
+# built standalone app dropped in the project root (platform-specific build artifact)
+/Neuclip Studio
+/Neuclip Studio.exe
+/Neuclip Studio.app/
 
 # os
 .DS_Store

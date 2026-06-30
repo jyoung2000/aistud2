@@ -16,6 +16,7 @@ Output: sidecar/dist/Neuclip Studio[.exe]  (macOS: "Neuclip Studio.app")
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -48,7 +49,29 @@ def main() -> None:
         str(SIDECAR / "app" / "desktop.py"),
     ]
     subprocess.check_call(cmd, cwd=str(SIDECAR))
-    print(f"\nbuilt: {SIDECAR / 'dist' / APP_NAME}")
+
+    # Copy the finished app into the PROJECT ROOT so it's easy to find and double-click.
+    out_dir = SIDECAR / "dist"
+    candidates = [
+        out_dir / f"{APP_NAME}.app",   # macOS bundle (windowed)
+        out_dir / f"{APP_NAME}.exe",   # Windows
+        out_dir / APP_NAME,            # Linux
+    ]
+    built = next((c for c in candidates if c.exists()), None)
+    if built is None:
+        sys.exit(f"build finished but no artifact found in {out_dir}")
+
+    dest = REPO / built.name
+    if dest.is_dir():
+        shutil.rmtree(dest)
+    elif dest.exists():
+        dest.unlink()
+    if built.is_dir():
+        shutil.copytree(built, dest)
+    else:
+        shutil.copy2(built, dest)
+
+    print(f"\n✓ Double-click this: {dest}")
 
 
 if __name__ == "__main__":
