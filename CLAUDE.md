@@ -164,6 +164,22 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
   target, "CPU" in the headless container) — never hardcoded.
 - Ports/paths/secrets via env with sane fallbacks; nothing hardcoded.
 
+## Two selections — never conflate (auto-layer feature)
+- **Pixel selection** — a mask in the shared buffer, shown as **cyan marching ants**, made by
+  the *selection tools* (SAM/lasso/box/pen/wand). Defines *where an edit applies*.
+- **Layer selection** — which layers are active (`selectedLayerIds`), made by the **Move tool**,
+  shown as a **solid bounding box + transform handles** (NEVER cyan ants). Defines *what you
+  move/toggle/transform*. The Move-tool drag-marquee selects **layers** by `bounds` intersection
+  — a different gesture/outcome from the selection tools' box-select that writes a mask.
+
+## Auto-layer model additions (`canvas/document.ts`)
+- `Layer.bounds:[x,y,w,h]` (image space, `boundsFromMask`/`layerBounds`) for marquee hit-testing;
+  `Layer.transform:{tx,ty,scale,rotation}` applied at composite around the bounds centre
+  (non-destructive — base/layer pixels never mutated, only the draw is transformed);
+  `Layer.locked`, `Layer.groupId`. `Document.groups: LayerGroup[]` (name, collapsed, layerIds).
+- Auto-layer milestones: [x] P1 model (bounds/transform/groups) · [ ] P2 auto-decompose ·
+  [ ] P3 Move tool · [ ] P4 drag-to-select layers · [ ] P5 multi-layer ops · [ ] P6 fill-behind.
+
 ## Edit document model (non-destructive — Tier-1)
 The editor is a **layer document**, not a flattened image. The base image is NEVER mutated;
 the visible picture is the composite of base → layers (in array order, bottom→top).

@@ -15,6 +15,25 @@ export type BlendMode =
 export type LayerKind = "base" | "ai-edit" | "adjustment" | "outpaint";
 
 export type Region = [number, number, number, number]; // x0,y0,x1,y1 image space
+export type LayerBounds = [number, number, number, number]; // x,y,w,h image space
+
+/** Non-destructive per-layer transform, applied at composite around the layer's bounds centre. */
+export interface LayerTransform {
+  tx: number;
+  ty: number;
+  scale: number;
+  rotation: number; // radians
+}
+
+export const IDENTITY_TRANSFORM: LayerTransform = { tx: 0, ty: 0, scale: 1, rotation: 0 };
+
+/** A folder/group of layers. */
+export interface LayerGroup {
+  id: string;
+  name: string;
+  collapsed: boolean;
+  layerIds: string[];
+}
 
 export interface RefSpec {
   role: string;
@@ -69,6 +88,14 @@ export interface Layer {
   harmonize?: HarmonizeSpec;
   /** Adjustment-layer spec (kind === 'adjustment'). */
   adjust?: AdjustSpec;
+  // --- auto-layer / move-tool additions ---
+  /** Image-space bbox [x,y,w,h] of the layer's content, for marquee hit-testing. */
+  bounds?: LayerBounds;
+  /** Non-destructive transform applied at composite (moving never alters pixels). */
+  transform?: LayerTransform;
+  locked?: boolean;
+  /** Membership in a Document.groups folder. */
+  groupId?: string;
 }
 
 export interface NeuDocument {
@@ -76,7 +103,37 @@ export interface NeuDocument {
   height: number;
   baseImageRef: string; // data URL or sidecar id of the base (never mutated)
   layers: Layer[];
+  groups?: LayerGroup[];
   selections?: { name: string; mask: number[] }[]; // named selections (Phase 5)
+}
+
+/** Derive a layer's image-space bbox [x,y,w,h] from its mask. Null if empty. */
+export function boundsFromMask(mask: Uint8Array, w: number, h: number): LayerBounds | null {
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      if (mask[row + x]) {
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+  }
+  if (x1 < 0) return null;
+  return [x0, y0, x1 - x0 + 1, y1 - y0 + 1];
+}
+
+/** Bounds for a layer; falls back to the full document when it has no mask. */
+export function layerBounds(layer: Layer, docW: number, docH: number): LayerBounds {
+  if (layer.bounds) return layer.bounds;
+  if (layer.mask) return boundsFromMask(layer.mask, docW, docH) ?? [0, 0, docW, docH];
+  return [0, 0, docW, docH];
+}
+
+function hasTransform(t?: LayerTransform): t is LayerTransform {
+  return !!t && (t.tx !== 0 || t.ty !== 0 || t.scale !== 1 || t.rotation !== 0);
 }
 
 let _idc = 0;
@@ -166,7 +223,23 @@ export function composite(
 
     ctx.globalAlpha = L.opacity;
     ctx.globalCompositeOperation = BLEND_OP[L.blendMode] ?? "source-over";
-    ctx.drawImage(tmp, 0, 0);
+    if (hasTransform(L.transform)) {
+      // move/scale/rotate the masked layer content around its bounds centre — pixels in
+      // `tmp` (and the base) are never mutated; only the draw is transformed.
+      const [bx, by, bw, bh] = L.bounds ?? [0, 0, width, height];
+      const cx = bx + bw / 2;
+      const cy = by + bh / 2;
+      const tr = L.transform;
+      ctx.save();
+      ctx.translate(cx + tr.tx, cy + tr.ty);
+      ctx.rotate(tr.rotation);
+      ctx.scale(tr.scale, tr.scale);
+      ctx.translate(-cx, -cy);
+      ctx.drawImage(tmp, 0, 0);
+      ctx.restore();
+    } else {
+      ctx.drawImage(tmp, 0, 0);
+    }
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = "source-over";
   }

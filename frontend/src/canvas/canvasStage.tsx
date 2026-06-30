@@ -41,6 +41,8 @@ import {
   newLayerId,
   serializeDoc,
   deserializeDoc,
+  boundsFromMask,
+  IDENTITY_TRANSFORM,
   type BlendMode,
   type Layer as DocLayer,
   type DocTransform,
@@ -955,6 +957,8 @@ export function CanvasStage() {
       resultUrl: v.url,
       source: { model: "mock", prompt, seed: v.seed, params: {}, sendRegion: [0, 0, img.naturalWidth - 1, img.naturalHeight - 1] },
       harmonize: { ...harmonize },
+      bounds: boundsFromMask(mask.data, img.naturalWidth, img.naturalHeight) ?? undefined,
+      transform: { ...IDENTITY_TRANSFORM },
     };
     setLayers((ls) => [...ls, layer]);
     setActiveLayer(id);
@@ -1200,6 +1204,8 @@ export function CanvasStage() {
             sendRegion: (done.region as [number, number, number, number]) ?? [0, 0, img.naturalWidth - 1, img.naturalHeight - 1],
           },
           harmonize: { ...harmonize },
+          bounds: boundsFromMask(mask.data, img.naturalWidth, img.naturalHeight) ?? undefined,
+          transform: { ...IDENTITY_TRANSFORM },
         };
         setLayers((ls) => [...ls, layer]); // top of stack
         setActiveLayer(id);
