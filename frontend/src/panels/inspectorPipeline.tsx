@@ -31,6 +31,23 @@ export function InspectorPipeline() {
   const [refByModel, setRefByModel] = useState<Record<string, ReferenceState>>({});
   const refState = refByModel[primaryId] ?? defaultReferenceState(model);
 
+  // Routing: make `toId` the active/primary model for a role it supports, carrying the
+  // reference image and the chosen role across the switch.
+  const switchModel = (toId: string, role: string) => {
+    const target = modelById(toId);
+    if (!target) return;
+    const carriedFile = refState.file;
+    if (compareMode) {
+      setComparisonSet((prev) => [toId, ...prev.filter((x) => x !== toId)]);
+    } else {
+      setModelId(toId);
+    }
+    setRefByModel((prev) => ({
+      ...prev,
+      [toId]: { ...defaultReferenceState(target), role: role as ReferenceState["role"], file: carriedFile },
+    }));
+  };
+
   return (
     <aside
       style={{
@@ -107,6 +124,7 @@ export function InspectorPipeline() {
         model={model}
         value={refState}
         onChange={(next) => setRefByModel((prev) => ({ ...prev, [primaryId]: next }))}
+        onSwitchModel={switchModel}
       />
 
       {compareMode && (

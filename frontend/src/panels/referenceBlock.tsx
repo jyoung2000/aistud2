@@ -4,6 +4,7 @@ import {
   ROLE_BLURB,
   ROLE_LABELS,
   defaultRoleFor,
+  findModelForRole,
   type ModelRefCaps,
   type ReferenceRole,
 } from "../api/referenceModels";
@@ -40,12 +41,17 @@ export function ReferenceBlock({
   model,
   value,
   onChange,
+  onSwitchModel,
 }: {
   model: ModelRefCaps;
   value: ReferenceState;
   onChange: (next: ReferenceState) => void;
+  /** Route to a model that supports a role the active model can't do. */
+  onSwitchModel?: (modelId: string, role: ReferenceRole) => void;
 }) {
   const set = (patch: Partial<ReferenceState>) => onChange({ ...value, ...patch });
+  const noReference = model.reference_roles.length === 0;
+  const supported = model.reference_roles.includes(value.role);
 
   return (
     <section
@@ -60,12 +66,27 @@ export function ReferenceBlock({
       }}
     >
       <Header />
-      <DropZone file={value.file} onFile={(file) => set({ file })} />
-      <RoleToggle role={value.role} onRole={(role) => set({ role })} />
-      <p style={{ margin: 0, fontSize: 11, color: "#9a8b6a", lineHeight: 1.4 }}>
-        {ROLE_BLURB[value.role]}
-      </p>
-      <RoleControls model={model} value={value} set={set} />
+
+      {noReference ? (
+        <NoReferenceNote model={model} />
+      ) : (
+        <>
+          <DropZone file={value.file} onFile={(file) => set({ file })} />
+          <RoleToggle
+            role={value.role}
+            supported={model.reference_roles}
+            onRole={(role) => set({ role })}
+          />
+          <p style={{ margin: 0, fontSize: 11, color: "#9a8b6a", lineHeight: 1.4 }}>
+            {ROLE_BLURB[value.role]}
+          </p>
+          {supported ? (
+            <RoleControls model={model} value={value} set={set} />
+          ) : (
+            <SwitchNotice model={model} role={value.role} onSwitch={onSwitchModel} />
+          )}
+        </>
+      )}
     </section>
   );
 }
@@ -186,9 +207,11 @@ function DropZone({ file, onFile }: { file: File | null; onFile: (f: File | null
 
 function RoleToggle({
   role,
+  supported,
   onRole,
 }: {
   role: ReferenceRole;
+  supported: ReferenceRole[];
   onRole: (r: ReferenceRole) => void;
 }) {
   return (
@@ -204,25 +227,97 @@ function RoleToggle({
     >
       {ROLES.map((r) => {
         const active = r === role;
+        const ok = supported.includes(r);
         return (
           <button
             key={r}
             onClick={() => onRole(r)}
+            title={ok ? undefined : "Not supported by this model — pick to switch models"}
             style={{
+              position: "relative",
               padding: "6px 4px",
               borderRadius: 4,
-              border: "none",
+              border: active && !ok ? "1px dashed #ef9a4a" : "none",
               cursor: "pointer",
               fontSize: 11,
               fontWeight: active ? 700 : 500,
-              color: active ? "#1a160e" : "#caa86a",
+              color: active ? "#1a160e" : ok ? "#caa86a" : "#6b6147",
               background: active ? AMBER : "transparent",
+              opacity: ok || active ? 1 : 0.55,
             }}
           >
             {ROLE_LABELS[r]}
+            {!ok && (
+              <span
+                style={{ marginLeft: 4, fontSize: 9, color: active ? "#5b3a00" : "#7d6a3a" }}
+              >
+                ◌
+              </span>
+            )}
           </button>
         );
       })}
+    </div>
+  );
+}
+
+function SwitchNotice({
+  model,
+  role,
+  onSwitch,
+}: {
+  model: ModelRefCaps;
+  role: ReferenceRole;
+  onSwitch?: (modelId: string, role: ReferenceRole) => void;
+}) {
+  const target = findModelForRole(role);
+  return (
+    <div
+      style={{
+        border: "1px solid #ef9a4a66",
+        background: "#241a0c",
+        borderRadius: 6,
+        padding: "10px 12px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        fontSize: 11.5,
+        color: "#e8d6b0",
+        lineHeight: 1.4,
+      }}
+    >
+      <span>
+        <b>{model.label}</b> can't do <b>{ROLE_LABELS[role]}</b>.
+      </span>
+      {target ? (
+        <button
+          onClick={() => onSwitch?.(target.id, role)}
+          style={{
+            alignSelf: "flex-start",
+            padding: "5px 10px",
+            borderRadius: 5,
+            border: "none",
+            cursor: "pointer",
+            fontSize: 11,
+            fontWeight: 700,
+            color: "#1a160e",
+            background: "#ef9a4a",
+          }}
+        >
+          Switch to {target.label} →
+        </button>
+      ) : (
+        <span style={{ color: "#b9a884" }}>No installed model supports this role.</span>
+      )}
+    </div>
+  );
+}
+
+function NoReferenceNote({ model }: { model: ModelRefCaps }) {
+  return (
+    <div style={{ fontSize: 11.5, color: "#9a8b6a", lineHeight: 1.45 }}>
+      <b>{model.label}</b> ({model.paradigm}) takes no reference image — it edits from the
+      selection and prompt alone.
     </div>
   );
 }

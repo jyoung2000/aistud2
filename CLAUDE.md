@@ -70,8 +70,12 @@ must be just another table entry.
 - UI is **amber** (AI-side). Frontend: `panels/referenceBlock.tsx` (controlled component,
   role-agnostic `ReferenceState`), hosted by `panels/inspectorPipeline.tsx`. Stub model
   caps in `api/referenceModels.ts` until the real registry lands (Phase 7 / M2).
-- Reference-feature milestones: [x] M1 UI (stubbed) · [ ] M2 routing · [ ] M3 replace
+- Reference-feature milestones: [x] M1 UI (stubbed) · [x] M2 routing · [ ] M3 replace
   e2e · [ ] M4 pose preprocess+transfer · [ ] M5 profiles+style. (Builds on Phases 6–8.)
+  M2: role toggle dims unsupported roles; picking one shows a "switch to {model}" notice
+  (`SwitchNotice` → `findModelForRole`) that re-targets the active/primary model and carries
+  the reference image + role across; models with no `reference_roles` show a "no reference"
+  note instead of the toggle.
 
 ## Multi-model compare ("shootout")
 Run one edit across 2..N models at once, each prompted from its own research profile, then
