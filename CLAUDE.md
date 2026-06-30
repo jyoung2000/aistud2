@@ -195,7 +195,7 @@ the visible picture is the composite of base → layers (in array order, bottom�
   Generate bar (default on, 0.6). Verified: edit mean pulled toward surround (138→45), outside
   byte-identical.
 - Tier-1/2 milestones: [x] P1 layer stack · [x] P2 .neuclip save + adjustment layers + crop ·
-  [x] P3 harmonize · [x] P4 iterate/re-roll · [x] P5 stronger select · [ ] P6 outpaint ·
+  [x] P3 harmonize · [x] P4 iterate/re-roll · [x] P5 stronger select · [x] P6 outpaint ·
   [ ] P7 upscale/face-restore · [ ] P8 before/after diff · [ ] P9 LoRA.
 
 ## Phase status

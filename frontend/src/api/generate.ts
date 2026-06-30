@@ -100,6 +100,29 @@ export function resultToImage(b64: string): Promise<HTMLImageElement> {
   });
 }
 
+export interface OutpaintResult {
+  status: string;
+  image_png?: string;
+  width: number;
+  height: number;
+  dx: number;
+  dy: number;
+  job_id?: string;
+}
+
+export async function outpaint(
+  id: string,
+  p: { new_w: number; new_h: number; dx: number; dy: number; prompt?: string; mock?: boolean; model_slug?: string }
+): Promise<OutpaintResult> {
+  const res = await fetch(`${await baseUrl()}/outpaint`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, ...p }),
+  });
+  if (!res.ok) throw new Error(`/outpaint ${res.status}: ${await res.text()}`);
+  return (await res.json()) as OutpaintResult;
+}
+
 export async function b64ToFile(b64: string, name = "edit.png"): Promise<File> {
   const src = b64.startsWith("data:") ? b64 : `data:image/png;base64,${b64}`;
   const blob = await (await fetch(src)).blob();

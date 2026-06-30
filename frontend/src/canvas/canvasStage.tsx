@@ -46,7 +46,7 @@ import {
   type DocTransform,
   type AdjustSpec,
 } from "./document";
-import { b64ToFile } from "../api/generate";
+import { b64ToFile, outpaint } from "../api/generate";
 import { LayersPanel } from "../panels/layersPanel";
 
 type Tool = "select" | "lasso" | "pen" | "wand" | "hand";
@@ -1019,6 +1019,51 @@ export function CanvasStage() {
     }
   };
 
+  // outpaint: extend the canvas to a target aspect and generatively fill the new region.
+  const outpaintTo = async (ratio: number) => {
+    if (!img || !imageId) return;
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    let nw = W;
+    let nh = H;
+    if (W / H < ratio) nw = Math.round(H * ratio);
+    else nh = Math.round(W / ratio);
+    if (nw === W && nh === H) return;
+    const dx = Math.round((nw - W) / 2);
+    const dy = Math.round((nh - H) / 2);
+    setGenStatus("busy");
+    try {
+      const r = await outpaint(imageId, { new_w: nw, new_h: nh, dx, dy, prompt, mock: true });
+      if (r.status === "completed" && r.image_png) {
+        const im = await resultToImage(r.image_png);
+        setImg(im); // extended image becomes the new base (outpaint resets the layer stack)
+        setLayers([]);
+        layerImgs.current.clear();
+        setActiveLayer(null);
+        setMask(new MaskBuffer(r.width, r.height));
+        setT(fitTransform(r.width, r.height, vp.w, vp.h));
+        cacheImgPx(im);
+        const tc = document.createElement("canvas");
+        const s = 80 / Math.max(r.width, r.height);
+        tc.width = Math.max(1, Math.round(r.width * s));
+        tc.height = Math.max(1, Math.round(r.height * s));
+        tc.getContext("2d")!.drawImage(im, 0, 0, tc.width, tc.height);
+        setBaseThumb(tc.toDataURL("image/png"));
+        const up = await loadImageToSidecar(await b64ToFile(r.image_png));
+        setImageId(up.id);
+        setBackend(up.backend);
+        setSamPoints([]);
+        setImgVer((v) => v + 1);
+        undoStack.current = [];
+        redoStack.current = [];
+        setGenStatus("done");
+      } else setGenStatus("failed");
+    } catch (e) {
+      console.error("outpaint failed:", e);
+      setGenStatus("failed");
+    }
+  };
+
   const applyAspectCrop = (ratio: number | null) => {
     if (!img) return;
     if (ratio === null) {
@@ -1157,6 +1202,7 @@ export function CanvasStage() {
         onStraighten={(deg) => setDocTransform((tr) => ({ ...tr, straighten: deg }))}
         onAspect={applyAspectCrop}
         hasCrop={!!docTransform.crop}
+        onExtend={outpaintTo}
       />
       <ZoomBar
         zoom={t.scale}
@@ -1562,6 +1608,7 @@ function FileBar({
   onStraighten,
   onAspect,
   hasCrop,
+  onExtend,
 }: {
   hasImage: boolean;
   onSave: () => void;
@@ -1571,6 +1618,7 @@ function FileBar({
   onStraighten: (deg: number) => void;
   onAspect: (ratio: number | null) => void;
   hasCrop: boolean;
+  onExtend: (ratio: number) => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const btn: React.CSSProperties = {
@@ -1639,6 +1687,26 @@ function FileBar({
         ))}
       </select>
       {hasCrop && <span style={{ color: "#22d3ee", fontSize: 10 }}>cropped</span>}
+      <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
+      <span>Extend</span>
+      <select
+        disabled={!hasImage}
+        defaultValue=""
+        onChange={(e) => {
+          const r = Number(e.target.value);
+          if (r) onExtend(r);
+          e.target.value = "";
+        }}
+        style={{ ...btn, padding: "2px 4px" }}
+        title="Outpaint: extend the canvas to a new aspect and fill the new region"
+      >
+        <option value="">to…</option>
+        <option value={1}>1:1</option>
+        <option value={16 / 9}>16:9</option>
+        <option value={9 / 16}>9:16</option>
+        <option value={4 / 3}>4:3</option>
+        <option value={3 / 2}>3:2</option>
+      </select>
       <span style={{ marginLeft: 8 }}>Straighten</span>
       <input
         type="range"

@@ -160,6 +160,70 @@ def livewire_costmap(body: CostMapIn) -> dict:
     return cached
 
 
+class OutpaintIn(BaseModel):
+    id: str
+    new_w: int
+    new_h: int
+    dx: int  # where the original base sits in the new canvas
+    dy: int
+    prompt: str = ""
+    model_slug: Optional[str] = None
+    mock: bool = False
+
+
+@app.post("/outpaint")
+def outpaint(body: OutpaintIn) -> dict:
+    try:
+        session = imaging.require_active(body.id)
+    except KeyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    import cv2
+    import numpy as np
+
+    base = session.rgb
+    H, W = base.shape[:2]
+    nw, nh, dx, dy = body.new_w, body.new_h, body.dx, body.dy
+    if not (nw >= W and nh >= H and 0 <= dx <= nw - W and 0 <= dy <= nh - H):
+        raise HTTPException(status_code=400, detail="invalid extend bounds")
+
+    canvas = np.zeros((nh, nw, 3), np.uint8)
+    canvas[dy : dy + H, dx : dx + W] = base
+    known = np.zeros((nh, nw), np.uint8)
+    known[dy : dy + H, dx : dx + W] = 255
+    unknown = 255 - known
+
+    key = settings_store.get_secret("wavespeed_api_key")
+    use_real = (not body.mock) and bool(key) and bool(body.model_slug)
+    if use_real:
+        # real outpaint = inpaint the new region with an outpaint-capable model
+        try:
+            slug, payload = registry.build_payload(body.model_slug, canvas, unknown, body.prompt, {})
+            pid = wavespeed.submit(slug, payload, key)
+            job = jobs.create(
+                rgb=canvas, region=(0, 0, nw - 1, nh - 1), alpha=(known == 0).astype(np.float32),
+                crop_rgb=canvas, crop_mask=unknown, prompt=body.prompt, slug=slug,
+            )
+            job.mode = "wavespeed"
+            job.status = "polling"
+            job.prediction_id = pid
+            return {"job_id": job.id, "status": "polling", "width": nw, "height": nh, "dx": dx, "dy": dy}
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"outpaint submit failed: {e}")
+
+    # mock: Telea inpaint extends the scene into the new region; base region stays exact.
+    filled_bgr = cv2.inpaint(cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR), unknown, 8, cv2.INPAINT_TELEA)
+    filled = cv2.cvtColor(filled_bgr, cv2.COLOR_BGR2RGB)
+    filled[dy : dy + H, dx : dx + W] = base  # guarantee the original region is byte-identical
+    return {
+        "status": "completed",
+        "image_png": imaging.png_to_base64(filled, "RGB"),
+        "width": nw,
+        "height": nh,
+        "dx": dx,
+        "dy": dy,
+    }
+
+
 @app.post("/refine")
 def refine(body: RefineIn) -> dict:
     try:
