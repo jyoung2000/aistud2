@@ -383,6 +383,43 @@ def poll_generation(body: PollIn) -> dict:
     return _job_payload(job)
 
 
+class FinishIn(BaseModel):
+    image_png: Optional[str] = None  # finish this image; else the active base
+    id: Optional[str] = None
+    scale: int = 2
+    face_restore: bool = False
+    face_strength: float = 0.5
+
+
+@app.post("/finish")
+def finish(body: FinishIn) -> dict:
+    import base64 as _b64
+
+    from app import finishing
+
+    if body.image_png:
+        rgb = imaging.load_rgb(_b64.b64decode(body.image_png.split(",")[-1]))
+    elif body.id:
+        try:
+            rgb = imaging.require_active(body.id).rgb
+        except KeyError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+    else:
+        raise HTTPException(status_code=400, detail="image_png or id required")
+
+    out, up_backend = finishing.upscale(rgb, body.scale)
+    fr_backend = None
+    if body.face_restore:
+        out, fr_backend = finishing.restore_faces(out, body.face_strength)
+    return {
+        "image_png": imaging.png_to_base64(out, "RGB"),
+        "width": int(out.shape[1]),
+        "height": int(out.shape[0]),
+        "upscale_backend": up_backend,
+        "face_backend": fr_backend,
+    }
+
+
 @app.get("/profiles")
 def get_profiles() -> dict:
     return {"profiles": profile_store.list_profiles()}

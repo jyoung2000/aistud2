@@ -46,7 +46,7 @@ import {
   type DocTransform,
   type AdjustSpec,
 } from "./document";
-import { b64ToFile, outpaint } from "../api/generate";
+import { b64ToFile, outpaint, finishImage } from "../api/generate";
 import { LayersPanel } from "../panels/layersPanel";
 
 type Tool = "select" | "lasso" | "pen" | "wand" | "hand";
@@ -810,6 +810,30 @@ export function CanvasStage() {
     restore(s);
   };
 
+  // --- finishing pass: upscale (+ face restore) then export ---
+  const finishAndExport = async (scale: number, faceRestore: boolean) => {
+    const c = exportCanvas();
+    if (!c) return;
+    setGenStatus("busy");
+    try {
+      const r = await finishImage(c.toDataURL("image/png"), {
+        scale,
+        face_restore: faceRestore,
+        face_strength: 0.5,
+      });
+      const im = await resultToImage(r.image_png);
+      const cc = document.createElement("canvas");
+      cc.width = r.width;
+      cc.height = r.height;
+      cc.getContext("2d")!.drawImage(im, 0, 0);
+      cc.toBlob((b) => b && downloadBlob(b, `neuclip-${scale}x.png`), "image/png");
+      setGenStatus("done");
+    } catch (e) {
+      console.error("finish failed:", e);
+      setGenStatus("failed");
+    }
+  };
+
   // --- export (composite + non-destructive crop/straighten) ---
   const exportPng = () => {
     const c = exportCanvas();
@@ -1203,6 +1227,7 @@ export function CanvasStage() {
         onAspect={applyAspectCrop}
         hasCrop={!!docTransform.crop}
         onExtend={outpaintTo}
+        onFinish={finishAndExport}
       />
       <ZoomBar
         zoom={t.scale}
@@ -1609,6 +1634,7 @@ function FileBar({
   onAspect,
   hasCrop,
   onExtend,
+  onFinish,
 }: {
   hasImage: boolean;
   onSave: () => void;
@@ -1619,8 +1645,10 @@ function FileBar({
   onAspect: (ratio: number | null) => void;
   hasCrop: boolean;
   onExtend: (ratio: number) => void;
+  onFinish: (scale: number, faceRestore: boolean) => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const [finishFace, setFinishFace] = useState(false);
   const btn: React.CSSProperties = {
     background: "#181c22",
     color: "#cbd5e1",
@@ -1719,6 +1747,18 @@ function FileBar({
         style={{ width: 90, accentColor: "#22d3ee" }}
       />
       <span style={{ width: 36 }}>{straighten.toFixed(1)}°</span>
+      <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
+      <span>Finish</span>
+      <label style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer" }}>
+        <input type="checkbox" checked={finishFace} onChange={(e) => setFinishFace(e.target.checked)} style={{ accentColor: "#22d3ee" }} />
+        face
+      </label>
+      <button style={btn} disabled={!hasImage} onClick={() => onFinish(2, finishFace)} title="Upscale 2x (+ optional face restore) and export">
+        ↑2× export
+      </button>
+      <button style={btn} disabled={!hasImage} onClick={() => onFinish(4, finishFace)} title="Upscale 4x and export">
+        ↑4×
+      </button>
     </div>
   );
 }

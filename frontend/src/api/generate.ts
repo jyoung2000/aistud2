@@ -123,6 +123,19 @@ export async function outpaint(
   return (await res.json()) as OutpaintResult;
 }
 
+export async function finishImage(
+  imagePng: string,
+  opts: { scale: number; face_restore: boolean; face_strength?: number }
+): Promise<{ image_png: string; width: number; height: number; upscale_backend: string; face_backend: string | null }> {
+  const res = await fetch(`${await baseUrl()}/finish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image_png: imagePng, ...opts }),
+  });
+  if (!res.ok) throw new Error(`/finish ${res.status}`);
+  return await res.json();
+}
+
 export async function b64ToFile(b64: string, name = "edit.png"): Promise<File> {
   const src = b64.startsWith("data:") ? b64 : `data:image/png;base64,${b64}`;
   const blob = await (await fetch(src)).blob();
