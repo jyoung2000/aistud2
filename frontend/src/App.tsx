@@ -3,9 +3,12 @@ import { APP_NAME } from "./constants";
 import { waitForSidecar } from "./api/sidecar";
 import { StatusBar, type SidecarState } from "./panels/statusBar";
 import { InspectorPipeline } from "./panels/inspectorPipeline";
+import { SettingsModal } from "./panels/settingsModal";
 
 export default function App() {
   const [state, setState] = useState<SidecarState>({ kind: "connecting" });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const health = state.kind === "connected" ? state.health : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -45,6 +48,22 @@ export default function App() {
         }}
       >
         {APP_NAME}
+        <button
+          onClick={() => setSettingsOpen(true)}
+          title="Settings (API keys, compute)"
+          style={{
+            marginLeft: "auto",
+            border: "1px solid #2a2f37",
+            background: "transparent",
+            color: "#cbd5e1",
+            borderRadius: 6,
+            padding: "4px 10px",
+            fontSize: 12,
+            cursor: "pointer",
+          }}
+        >
+          ⚙ Settings
+        </button>
       </header>
 
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
@@ -78,6 +97,12 @@ export default function App() {
       </div>
 
       <StatusBar state={state} />
+
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        health={health}
+      />
     </div>
   );
 }

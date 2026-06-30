@@ -138,7 +138,13 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
   `.bat` auto-install toolchains and run the Tauri dev GUI. De-emphasized vs the easy path.
 
 ## Sidecar API surface (target)
-`/health` `/load` `/select` `/refine` `/livewire/costmap` `/generate` `/poll`
+`/health` `/settings` `/load` `/select` `/refine` `/livewire/costmap` `/generate` `/poll`
+- **`/settings` (IMPLEMENTED):** `GET` returns non-secret status (which keys are set, source
+  config|env, masked `…last4` hint, config path); `POST` saves keys. Secrets stored in
+  `~/.neuclip/config.json` (override `NEUCLIP_CONFIG_DIR`), chmod 600, never returned raw.
+  Resolve order per secret: config file → env var (`WAVESPEED_API_KEY`/`ANTHROPIC_API_KEY`)
+  → unset (`sidecar/app/settings.py`). Frontend: `panels/settingsModal.tsx` (⚙ in header),
+  `api/settings.ts`. The Settings screen also shows the compute device + a CPU/GPU note.
 
 ## Sidecar <-> Tauri handshake (Phase 0, IMPLEMENTED)
 - Sidecar binds a port: tries `NEUCLIP_SIDECAR_PORT` (default 8756); on conflict it

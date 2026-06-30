@@ -10,11 +10,14 @@ import os
 import socket
 import sys
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
+from app import settings as settings_store
 from app.constants import APP_NAME, DEFAULT_PORT, PORT_ENV, PORT_STDOUT_PREFIX
 from app.device import banner, detect_device
 
@@ -41,6 +44,25 @@ def health() -> dict:
         "torch": d["torch"],
         "torch_version": d["torch_version"],
     }
+
+
+class SettingsIn(BaseModel):
+    # Optional so the UI can update one key at a time. Empty string clears (falls back to env).
+    wavespeed_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+
+
+@app.get("/settings")
+def get_settings() -> dict:
+    """Non-secret status: which keys are set, their source, and a masked hint."""
+    return settings_store.settings_status()
+
+
+@app.post("/settings")
+def post_settings(body: SettingsIn) -> dict:
+    """Save provided keys; only fields present in the body are touched."""
+    updates = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
+    return settings_store.save_secrets(updates)
 
 
 def _ui_dir() -> Path | None:
