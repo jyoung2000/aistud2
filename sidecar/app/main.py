@@ -25,8 +25,7 @@ from app.constants import APP_NAME, DEFAULT_PORT, PORT_ENV, PORT_STDOUT_PREFIX
 from app.device import banner, detect_device
 from app.jobs import jobs
 from app.matting import EdgeRefiner
-from app.models import wavespeed
-from app.models.adapters import flux_fill
+from app.models import registry, wavespeed
 from app.select_sam import SmartSelector
 
 app = FastAPI(title=f"{APP_NAME} sidecar")
@@ -161,15 +160,22 @@ def refine(body: RefineIn) -> dict:
     return {"mask_png": imaging.png_to_base64(alpha), "backend": _refiner.backend}
 
 
+@app.get("/models")
+def list_models() -> dict:
+    return {"models": registry.public_list()}
+
+
 class GenerateIn(BaseModel):
     id: str
     mask_png: str
     prompt: str = ""
-    model_slug: Optional[str] = None
+    model_slug: Optional[str] = None  # model id or slug (registry resolves both)
     mock: bool = False
     pad_frac: float = 0.12
     feather: float = 2.5
     params: dict = {}
+    reference_png: Optional[str] = None  # base64 PNG of the reference image
+    reference_role: Optional[str] = None  # replace | pose | style
 
 
 class PollIn(BaseModel):
@@ -223,12 +229,24 @@ def generate(body: GenerateIn) -> dict:
         return _job_payload(job)
 
     try:
-        payload = flux_fill.build_payload(crop, cmask, body.prompt, body.params)
-        pid = wavespeed.submit(body.model_slug, payload, key)
+        reference_rgb = None
+        if body.reference_png:
+            import base64 as _b64
+
+            reference_rgb = imaging.load_rgb(_b64.b64decode(body.reference_png.split(",")[-1]))
+        slug, payload = registry.build_payload(
+            body.model_slug, crop, cmask, body.prompt, body.params, reference_rgb, body.reference_role
+        )
+        pid = wavespeed.submit(slug, payload, key)
+        job.slug = slug
         job.mode = "wavespeed"
         job.status = "polling"
         job.prediction_id = pid
         return _job_payload(job)
+    except KeyError as e:
+        job.status = "failed"
+        job.error = str(e)
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         job.status = "failed"
         job.error = str(e)

@@ -22,13 +22,12 @@ def _data_url(arr: np.ndarray, mode: str) -> str:
     return "data:image/png;base64," + png_to_base64(arr, mode)
 
 
-def build_payload(crop_rgb: np.ndarray, crop_mask: np.ndarray, prompt: str, params: dict) -> dict:
+def build_payload(crop_rgb, crop_mask, prompt, params, reference_rgb=None, reference_role=None) -> dict:
     payload = {
         "prompt": prompt,
         "image": _data_url(crop_rgb, "RGB"),
         "mask_image": _data_url(crop_mask, "L"),
     }
-    # carry through only known, range-checked params
     for k in ("num_inference_steps", "guidance_scale", "seed", "strength"):
         if k in params and params[k] is not None:
             payload[k] = params[k]

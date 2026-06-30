@@ -1,7 +1,7 @@
 import { COLOR_GENERATION } from "../constants";
 import {
   MAX_COMPARE,
-  STUB_MODELS,
+  getModels,
   modelById,
   type ModelRefCaps,
 } from "../api/referenceModels";
@@ -106,7 +106,7 @@ export function ModelCompare({
 
       {/* picker — checkable model list */}
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        {STUB_MODELS.map((m) => {
+        {getModels().map((m) => {
           const on = set.includes(m.id);
           const disabled = !on && full;
           return (

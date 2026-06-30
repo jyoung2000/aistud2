@@ -5,6 +5,8 @@
 // the STUB registry below; in M2 it is replaced by the real model registry pulled from
 // each model card's API tab (sidecar `/models`). Keep the type stable so the swap is local.
 
+import { baseUrl } from "./sidecar";
+
 export type ReferenceRole = "replace" | "pose" | "style";
 
 /** How the processed reference is attached to the model request. */
@@ -16,12 +18,17 @@ export interface ModelRefCaps {
   /** Generation paradigm — drives prompt synthesis (instruction | inpaint | controlnet |
    *  reference/character). Shown as a badge in the picker. */
   paradigm: string;
-  /** Rough per-generation cost estimate in cents (stub until real pricing in M1/Phase 7). */
+  /** Rough per-generation cost estimate in cents. */
   estCostCents: number;
   /** Roles this model supports, in preference order (first = best supported). */
   reference_roles: ReferenceRole[];
   /** Per-role: which input field the adapter attaches the processed reference to. */
   reference_inputs: Partial<Record<ReferenceRole, ReferenceInput>>;
+  // Phase 7 registry flags (present when loaded from the sidecar /models).
+  slug?: string;
+  needs_mask?: boolean;
+  instruction_based?: boolean;
+  confirmed_slug?: boolean;
 }
 
 /** Max models in a comparison set (shootout). Comparison is intentional spend. */
@@ -92,8 +99,28 @@ export const STUB_MODELS: ModelRefCaps[] = [
   },
 ];
 
+// Live registry — seeded with the stub, replaced by the sidecar /models on load.
+let MODELS: ModelRefCaps[] = STUB_MODELS;
+
+export function getModels(): ModelRefCaps[] {
+  return MODELS;
+}
+
 export function modelById(id: string): ModelRefCaps | undefined {
-  return STUB_MODELS.find((m) => m.id === id);
+  return MODELS.find((m) => m.id === id);
+}
+
+/** Load the real model registry from the sidecar; falls back to the stub on failure. */
+export async function loadModels(): Promise<ModelRefCaps[]> {
+  try {
+    const res = await fetch(`${await baseUrl()}/models`);
+    if (!res.ok) throw new Error(`/models ${res.status}`);
+    const j = (await res.json()) as { models: ModelRefCaps[] };
+    if (Array.isArray(j.models) && j.models.length) MODELS = j.models;
+    return MODELS;
+  } catch {
+    return MODELS; // stub
+  }
 }
 
 /** The role a model "best supports" — first entry in its reference_roles. */
@@ -104,7 +131,7 @@ export function defaultRoleFor(model: ModelRefCaps): ReferenceRole {
 /** First model (from the given registry) that supports a role — for the M2 switch hint. */
 export function findModelForRole(
   role: ReferenceRole,
-  models: ModelRefCaps[] = STUB_MODELS
+  models: ModelRefCaps[] = getModels()
 ): ModelRefCaps | undefined {
   return models.find((m) => m.reference_roles.includes(role));
 }

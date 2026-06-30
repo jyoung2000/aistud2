@@ -213,6 +213,13 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
       + canvas amber Generate bar (prompt, status chip polling/done/failed, history strip);
       result re-uploaded so edits compound. Mock generate verified e2e (outside region
       bit-identical).
-- [ ] Phase 7 — Model registry & adapters
+- [x] **Phase 7** — Model registry & adapters. `models/registry.py` (ModelSpec per model:
+      slug, paradigm, needs_mask, instruction_based, reference_roles/inputs, est cost, build
+      fn) + `/models` endpoint. Adapters `qwen_edit`, `kontext`, `ideogram_char`, `flux_fill`
+      (uniform `build_payload(crop,mask,prompt,params,reference_rgb,role)`). `/generate`
+      dispatches through `registry.build_payload` by model id/slug and accepts an optional
+      reference image+role. Frontend `api/referenceModels.ts` `loadModels()` replaces the
+      stub catalog from `/models` (fallback to stub); inspector/compare read the live
+      registry. Verified `/models` returns 5 models with flags.
 - [ ] Phase 8 — Model prompt profiles & synthesis
 - [ ] Phase 9 — Finish & package

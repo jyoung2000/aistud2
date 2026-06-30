@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { COLOR_GENERATION } from "../constants";
-import { STUB_MODELS, modelById, type ModelRefCaps } from "../api/referenceModels";
+import { getModels, loadModels, modelById, type ModelRefCaps } from "../api/referenceModels";
 import {
   ReferenceBlock,
   defaultReferenceState,
@@ -14,20 +14,25 @@ import { TunedPrompts } from "./tunedPrompts";
 // Phases 6–8 replace the stub model list with the real registry and add the prompt /
 // params / queue controls and the actual N-way run.
 export function InspectorPipeline() {
+  const [models, setModels] = useState<ModelRefCaps[]>(getModels());
+  useEffect(() => {
+    loadModels().then((m) => setModels([...m]));
+  }, []);
+
   const [compareMode, setCompareMode] = useState(false);
-  const [modelId, setModelId] = useState(STUB_MODELS[0].id);
-  const [comparisonSet, setComparisonSet] = useState<string[]>([
-    STUB_MODELS[0].id,
-    STUB_MODELS[2].id,
-  ]);
+  const [modelId, setModelId] = useState(getModels()[0].id);
+  const [comparisonSet, setComparisonSet] = useState<string[]>(() => {
+    const m = getModels();
+    return [m[0].id, m[Math.min(2, m.length - 1)].id];
+  });
   const [intent, setIntent] = useState("");
   const [subject, setSubject] = useState("");
 
   // The reference block needs one model. In compare mode it follows the first selected
   // model (the "primary"); otherwise the single active model.
-  const primaryId = compareMode ? comparisonSet[0] ?? STUB_MODELS[0].id : modelId;
+  const primaryId = compareMode ? comparisonSet[0] ?? getModels()[0].id : modelId;
   const model = useMemo<ModelRefCaps>(
-    () => modelById(primaryId) ?? STUB_MODELS[0],
+    () => modelById(primaryId) ?? getModels()[0],
     [primaryId]
   );
 
@@ -106,7 +111,7 @@ export function InspectorPipeline() {
               fontSize: 12,
             }}
           >
-            {STUB_MODELS.map((m) => (
+            {models.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.label}
               </option>
