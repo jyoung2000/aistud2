@@ -182,7 +182,13 @@ the visible picture is the composite of base → layers (in array order, bottom�
   the layer array (+ mask); zoom/pan stay off the stack.
 - `frontend/src/panels/layersPanel.tsx`: per-layer thumbnail, visibility, opacity, blend
   mode, reorder (▲▼), delete, and "edit this layer"; a locked Base row at the bottom.
-- Tier-1/2 milestones: [x] P1 layer stack · [ ] P2 .neuclip save + adjustment layers + crop ·
+- `.neuclip` save/resume (`serializeDoc`/`deserializeDoc`): base embedded as data URL, each
+  layer's mask as PNG, resultUrl + source preserved; File-based Save/Open in the FileBar.
+  **Adjustment layers** (kind `adjustment`, `adjust:{values,clip}`): exposure/contrast/
+  saturation/temperature/vibrance applied in `composite()` to everything below (sliders in
+  the layers panel). **Crop & straighten**: non-destructive `DocTransform {straighten,crop}`
+  applied at export; aspect presets + straighten slider in the FileBar.
+- Tier-1/2 milestones: [x] P1 layer stack · [x] P2 .neuclip save + adjustment layers + crop ·
   [ ] P3 harmonize · [ ] P4 iterate/re-roll · [ ] P5 stronger select · [ ] P6 outpaint ·
   [ ] P7 upscale/face-restore · [ ] P8 before/after diff · [ ] P9 LoRA.
 

@@ -1,4 +1,6 @@
-import type { BlendMode, Layer } from "../canvas/document";
+import type { AdjustSpec, AdjustType, BlendMode, Layer } from "../canvas/document";
+
+const ADJUSTS: AdjustType[] = ["exposure", "contrast", "saturation", "temperature", "vibrance"];
 
 const BLENDS: BlendMode[] = [
   "normal",
@@ -23,6 +25,7 @@ export function LayersPanel({
   onDelete,
   onReorder,
   onEdit,
+  onAdjust,
 }: {
   layers: Layer[];
   activeId: string | null;
@@ -35,6 +38,7 @@ export function LayersPanel({
   onDelete: (id: string) => void;
   onReorder: (id: string, dir: -1 | 1) => void;
   onEdit: (id: string) => void;
+  onAdjust: (id: string, adjust: AdjustSpec) => void;
 }) {
   // Compositing order is bottom→top in the array; display top-first.
   const ordered = [...layers].reverse();
@@ -149,6 +153,30 @@ export function LayersPanel({
                   ✕
                 </button>
               </div>
+
+              {L.kind === "adjustment" && L.adjust && (
+                <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 2 }}>
+                  {ADJUSTS.map((k) => (
+                    <label key={k} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9.5, color: "#94a3b8" }}>
+                      <span style={{ width: 64 }}>{k}</span>
+                      <input
+                        type="range"
+                        min={-1}
+                        max={1}
+                        step={0.02}
+                        value={L.adjust!.values[k] ?? 0}
+                        onChange={(e) =>
+                          onAdjust(L.id, {
+                            ...L.adjust!,
+                            values: { ...L.adjust!.values, [k]: Number(e.target.value) },
+                          })
+                        }
+                        style={{ flex: 1, accentColor: "#22d3ee" }}
+                      />
+                    </label>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}

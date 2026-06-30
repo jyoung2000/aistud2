@@ -38,9 +38,14 @@ import { COLOR_GENERATION } from "../constants";
 import {
   composite as compositeDoc,
   newLayerId,
+  serializeDoc,
+  deserializeDoc,
   type BlendMode,
   type Layer as DocLayer,
+  type DocTransform,
+  type AdjustSpec,
 } from "./document";
+import { b64ToFile } from "../api/generate";
 import { LayersPanel } from "../panels/layersPanel";
 
 type Tool = "select" | "lasso" | "pen" | "hand";
@@ -108,6 +113,7 @@ export function CanvasStage() {
   const [imgVer, setImgVer] = useState(0); // bump when a layer image finishes loading
   const [activeLayer, setActiveLayer] = useState<string | null>(null);
   const [baseThumb, setBaseThumb] = useState<string | null>(null);
+  const [docTransform, setDocTransform] = useState<DocTransform>({ straighten: 0 });
 
   const composite = useMemo(() => {
     if (!img) return null;
@@ -679,24 +685,21 @@ export function CanvasStage() {
     restore(s);
   };
 
-  // --- export ---
+  // --- export (composite + non-destructive crop/straighten) ---
   const exportPng = () => {
-    if (!img) return;
-    const c = document.createElement("canvas");
-    c.width = img.naturalWidth;
-    c.height = img.naturalHeight;
-    c.getContext("2d")!.drawImage(img, 0, 0);
+    const c = exportCanvas();
+    if (!c) return;
     c.toBlob((b) => b && downloadBlob(b, "neuclip-export.png"), "image/png");
   };
   const exportCutout = () => {
-    if (!img || !mask || mask.isEmpty()) return;
+    if (!img || !mask || mask.isEmpty() || !composite) return;
     const w = img.naturalWidth;
     const h = img.naturalHeight;
     const c = document.createElement("canvas");
     c.width = w;
     c.height = h;
     const ctx = c.getContext("2d")!;
-    ctx.drawImage(img, 0, 0);
+    ctx.drawImage(composite, 0, 0);
     const id = ctx.getImageData(0, 0, w, h);
     for (let i = 0; i < mask.data.length; i++) id.data[i * 4 + 3] = mask.data[i] ? 255 : 0;
     ctx.putImageData(id, 0, 0);
@@ -746,6 +749,118 @@ export function CanvasStage() {
     if (L.source) setPrompt(L.source.prompt);
     if (L.mask) setMask(new MaskBuffer(img.naturalWidth, img.naturalHeight, new Uint8Array(L.mask)));
     setTool("select");
+  };
+  const addAdjustment = () => {
+    if (!img) return;
+    pushHistory();
+    const id = newLayerId();
+    const layer: DocLayer = {
+      id,
+      name: "Adjustment",
+      visible: true,
+      opacity: 1,
+      blendMode: "normal",
+      kind: "adjustment",
+      adjust: { values: { exposure: 0, contrast: 0, saturation: 0, temperature: 0, vibrance: 0 }, clip: false },
+    };
+    setLayers((ls) => [...ls, layer]);
+    setActiveLayer(id);
+    setImgVer((v) => v + 1);
+  };
+  const setLayerAdjust = (id: string, adjust: AdjustSpec) => {
+    updateLayer(id, { adjust });
+    setImgVer((v) => v + 1);
+  };
+
+  // --- project save / open (.neuclip) ---
+  const imgToDataUrl = (image: HTMLImageElement): string => {
+    const c = document.createElement("canvas");
+    c.width = image.naturalWidth;
+    c.height = image.naturalHeight;
+    c.getContext("2d")!.drawImage(image, 0, 0);
+    return c.toDataURL("image/png");
+  };
+  const saveProject = () => {
+    if (!img) return;
+    const json = serializeDoc(img.naturalWidth, img.naturalHeight, imgToDataUrl(img), layers, docTransform);
+    downloadBlob(new Blob([json], { type: "application/json" }), "neuclip-project.neuclip");
+  };
+  const openProject = async (file: File) => {
+    const text = await file.text();
+    const d = await deserializeDoc(text);
+    setImg(d.baseImg);
+    setLayers(d.layers);
+    layerImgs.current = d.layerImgs;
+    setDocTransform(d.transform ?? { straighten: 0 });
+    setMask(new MaskBuffer(d.width, d.height));
+    setActiveLayer(null);
+    setSamPoints([]);
+    setT(fitTransform(d.width, d.height, vp.w, vp.h));
+    setImgVer((v) => v + 1);
+    undoStack.current = [];
+    redoStack.current = [];
+    const tc = document.createElement("canvas");
+    const s = 80 / Math.max(d.width, d.height);
+    tc.width = Math.max(1, Math.round(d.width * s));
+    tc.height = Math.max(1, Math.round(d.height * s));
+    tc.getContext("2d")!.drawImage(d.baseImg, 0, 0, tc.width, tc.height);
+    setBaseThumb(tc.toDataURL("image/png"));
+    // re-upload base so selection works on the restored project
+    try {
+      const r = await loadImageToSidecar(await b64ToFile(imgToDataUrl(d.baseImg)));
+      setImageId(r.id);
+      setBackend(r.backend);
+    } catch (e) {
+      console.error("re-upload base failed:", e);
+    }
+  };
+
+  const applyAspectCrop = (ratio: number | null) => {
+    if (!img) return;
+    if (ratio === null) {
+      setDocTransform((tr) => ({ ...tr, crop: undefined }));
+      return;
+    }
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    let cw = W;
+    let ch = Math.round(W / ratio);
+    if (ch > H) {
+      ch = H;
+      cw = Math.round(H * ratio);
+    }
+    const x0 = Math.round((W - cw) / 2);
+    const y0 = Math.round((H - ch) / 2);
+    setDocTransform((tr) => ({ ...tr, crop: [x0, y0, x0 + cw - 1, y0 + ch - 1] }));
+  };
+
+  // composite with the non-destructive crop/straighten applied (for export)
+  const exportCanvas = (): HTMLCanvasElement | null => {
+    const src = composite ?? null;
+    if (!src) return null;
+    let c: HTMLCanvasElement = src;
+    if (docTransform.straighten) {
+      const rad = (docTransform.straighten * Math.PI) / 180;
+      const rc = document.createElement("canvas");
+      rc.width = src.width;
+      rc.height = src.height;
+      const rx = rc.getContext("2d")!;
+      rx.translate(src.width / 2, src.height / 2);
+      rx.rotate(rad);
+      rx.drawImage(src, -src.width / 2, -src.height / 2);
+      c = rc;
+    }
+    if (docTransform.crop) {
+      const [x0, y0, x1, y1] = docTransform.crop;
+      const w = Math.max(1, x1 - x0 + 1);
+      const h = Math.max(1, y1 - y0 + 1);
+      const cc = document.createElement("canvas");
+      cc.width = w;
+      cc.height = h;
+      cc.getContext("2d")!.drawImage(c, x0, y0, w, h, 0, 0, w, h);
+      c = cc;
+    }
+    return c;
   };
 
   // crop -> (mock model) -> feathered composite; result becomes a new ai-edit layer.
@@ -823,9 +938,20 @@ export function CanvasStage() {
           onDelete={deleteLayer}
           onReorder={reorderLayer}
           onEdit={editLayer}
+          onAdjust={setLayerAdjust}
         />
       )}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <FileBar
+        hasImage={!!img}
+        onSave={saveProject}
+        onOpenProject={openProject}
+        onAddAdjustment={addAdjustment}
+        straighten={docTransform.straighten}
+        onStraighten={(deg) => setDocTransform((tr) => ({ ...tr, straighten: deg }))}
+        onAspect={applyAspectCrop}
+        hasCrop={!!docTransform.crop}
+      />
       <ZoomBar
         zoom={t.scale}
         cursor={cursor}
@@ -1122,6 +1248,108 @@ function GenerateBar({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function FileBar({
+  hasImage,
+  onSave,
+  onOpenProject,
+  onAddAdjustment,
+  straighten,
+  onStraighten,
+  onAspect,
+  hasCrop,
+}: {
+  hasImage: boolean;
+  onSave: () => void;
+  onOpenProject: (f: File) => void;
+  onAddAdjustment: () => void;
+  straighten: number;
+  onStraighten: (deg: number) => void;
+  onAspect: (ratio: number | null) => void;
+  hasCrop: boolean;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const btn: React.CSSProperties = {
+    background: "#181c22",
+    color: "#cbd5e1",
+    border: "1px solid #2a2f37",
+    borderRadius: 5,
+    padding: "3px 9px",
+    fontSize: 11.5,
+    cursor: "pointer",
+  };
+  const ASPECTS: [string, number | null][] = [
+    ["Free", null],
+    ["1:1", 1],
+    ["16:9", 16 / 9],
+    ["9:16", 9 / 16],
+    ["4:3", 4 / 3],
+    ["3:2", 3 / 2],
+  ];
+  return (
+    <div
+      style={{
+        height: 32,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "0 10px",
+        borderBottom: "1px solid #20242b",
+        background: "#0d1014",
+        font: "11.5px ui-monospace, monospace",
+        color: "#94a3b8",
+      }}
+    >
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".neuclip,application/json"
+        hidden
+        onChange={(e) => e.target.files?.[0] && onOpenProject(e.target.files[0])}
+      />
+      <button style={btn} onClick={() => fileRef.current?.click()}>
+        Open .neuclip
+      </button>
+      <button style={btn} disabled={!hasImage} onClick={onSave}>
+        Save .neuclip
+      </button>
+      <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
+      <button style={btn} disabled={!hasImage} onClick={onAddAdjustment} title="Add adjustment layer">
+        + Adjustment
+      </button>
+      <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
+      <span>Crop</span>
+      <select
+        disabled={!hasImage}
+        defaultValue="Free"
+        onChange={(e) => {
+          const a = [["Free", null], ["1:1", 1], ["16:9", 16 / 9], ["9:16", 9 / 16], ["4:3", 4 / 3], ["3:2", 3 / 2]].find((x) => x[0] === e.target.value);
+          onAspect((a?.[1] as number | null) ?? null);
+        }}
+        style={{ ...btn, padding: "2px 4px" }}
+      >
+        {ASPECTS.map(([label]) => (
+          <option key={label} value={label}>
+            {label}
+          </option>
+        ))}
+      </select>
+      {hasCrop && <span style={{ color: "#22d3ee", fontSize: 10 }}>cropped</span>}
+      <span style={{ marginLeft: 8 }}>Straighten</span>
+      <input
+        type="range"
+        min={-15}
+        max={15}
+        step={0.5}
+        value={straighten}
+        disabled={!hasImage}
+        onChange={(e) => onStraighten(Number(e.target.value))}
+        style={{ width: 90, accentColor: "#22d3ee" }}
+      />
+      <span style={{ width: 36 }}>{straighten.toFixed(1)}°</span>
     </div>
   );
 }

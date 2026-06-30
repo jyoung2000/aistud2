@@ -39,6 +39,19 @@ export interface HarmonizeSpec {
   strength: number;
 }
 
+export type AdjustType = "exposure" | "contrast" | "saturation" | "temperature" | "vibrance";
+
+export interface AdjustSpec {
+  // a single adjustment layer can carry several values at once
+  values: Partial<Record<AdjustType, number>>; // each -1..1
+  clip: boolean; // clip to the layer directly below (else affects all below)
+}
+
+export interface DocTransform {
+  straighten: number; // degrees
+  crop?: Region; // image-space crop rect (subset of doc bounds)
+}
+
 export interface Layer {
   id: string;
   name: string;
@@ -54,6 +67,8 @@ export interface Layer {
   source?: LayerSource;
   /** Seam harmonization (Phase 3). */
   harmonize?: HarmonizeSpec;
+  /** Adjustment-layer spec (kind === 'adjustment'). */
+  adjust?: AdjustSpec;
 }
 
 export interface NeuDocument {
@@ -116,6 +131,24 @@ export function composite(
 
   for (const L of layers) {
     if (!L.visible || L.opacity <= 0) continue;
+
+    if (L.kind === "adjustment" && L.adjust) {
+      // affects everything composited so far (clip-to-below is a future refinement)
+      if (L.opacity >= 0.999) {
+        applyAdjust(out, L.adjust);
+      } else {
+        const before = document.createElement("canvas");
+        before.width = width;
+        before.height = height;
+        before.getContext("2d")!.drawImage(out, 0, 0);
+        applyAdjust(out, L.adjust);
+        ctx.globalAlpha = 1 - L.opacity;
+        ctx.drawImage(before, 0, 0);
+        ctx.globalAlpha = 1;
+      }
+      continue;
+    }
+
     const img = images.get(L.id);
     if (!img) continue;
 
@@ -138,4 +171,143 @@ export function composite(
     ctx.globalCompositeOperation = "source-over";
   }
   return out;
+}
+
+const clamp8 = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : v);
+
+export function applyAdjust(canvas: HTMLCanvasElement, adjust: AdjustSpec): void {
+  const ctx = canvas.getContext("2d")!;
+  const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = id.data;
+  const v = adjust.values;
+  const exposure = v.exposure ?? 0; // stops: factor 2^exposure
+  const contrast = v.contrast ?? 0;
+  const saturation = v.saturation ?? 0;
+  const temperature = v.temperature ?? 0;
+  const vibrance = v.vibrance ?? 0;
+  const expF = Math.pow(2, exposure);
+  const cAmt = contrast * 128;
+  const cF = (259 * (cAmt + 255)) / (255 * (259 - cAmt));
+  for (let i = 0; i < d.length; i += 4) {
+    let r = d[i] * expF;
+    let g = d[i + 1] * expF;
+    let b = d[i + 2] * expF;
+    r = cF * (r - 128) + 128;
+    g = cF * (g - 128) + 128;
+    b = cF * (b - 128) + 128;
+    if (temperature) {
+      r += temperature * 30;
+      b -= temperature * 30;
+    }
+    const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (saturation) {
+      r = gray + (r - gray) * (1 + saturation);
+      g = gray + (g - gray) * (1 + saturation);
+      b = gray + (b - gray) * (1 + saturation);
+    }
+    if (vibrance) {
+      // boost less-saturated pixels more
+      const mx = Math.max(r, g, b);
+      const sat = (mx - Math.min(r, g, b)) / 255;
+      const amt = vibrance * (1 - sat);
+      r = gray + (r - gray) * (1 + amt);
+      g = gray + (g - gray) * (1 + amt);
+      b = gray + (b - gray) * (1 + amt);
+    }
+    d[i] = clamp8(r);
+    d[i + 1] = clamp8(g);
+    d[i + 2] = clamp8(b);
+  }
+  ctx.putImageData(id, 0, 0);
+}
+
+// --- .neuclip serialization -------------------------------------------------
+
+interface SerLayer extends Omit<Layer, "mask"> {
+  maskPng?: string;
+}
+interface SerDoc {
+  version: 1;
+  width: number;
+  height: number;
+  base: string; // data URL
+  transform?: DocTransform;
+  layers: SerLayer[];
+}
+
+function loadImg(src: string): Promise<HTMLImageElement> {
+  return new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = rej;
+    im.src = src;
+  });
+}
+
+function maskToPng(mask: Uint8Array, w: number, h: number): string {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d")!;
+  const id = ctx.createImageData(w, h);
+  for (let i = 0; i < mask.length; i++) {
+    const o = i * 4;
+    id.data[o] = id.data[o + 1] = id.data[o + 2] = mask[i] ? 255 : 0;
+    id.data[o + 3] = 255;
+  }
+  ctx.putImageData(id, 0, 0);
+  return c.toDataURL("image/png");
+}
+
+async function pngToMask(src: string, w: number, h: number): Promise<Uint8Array> {
+  const img = await loadImg(src);
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d")!;
+  ctx.drawImage(img, 0, 0, w, h);
+  const d = ctx.getImageData(0, 0, w, h).data;
+  const out = new Uint8Array(w * h);
+  for (let i = 0; i < out.length; i++) out[i] = d[i * 4] > 127 ? 255 : 0;
+  return out;
+}
+
+export function serializeDoc(
+  width: number,
+  height: number,
+  baseDataUrl: string,
+  layers: Layer[],
+  transform?: DocTransform
+): string {
+  const sl: SerLayer[] = layers.map((L) => {
+    const { mask, ...rest } = L;
+    return { ...rest, maskPng: mask ? maskToPng(mask, width, height) : undefined };
+  });
+  const doc: SerDoc = { version: 1, width, height, base: baseDataUrl, transform, layers: sl };
+  return JSON.stringify(doc);
+}
+
+export async function deserializeDoc(json: string): Promise<{
+  width: number;
+  height: number;
+  baseImg: HTMLImageElement;
+  transform?: DocTransform;
+  layers: Layer[];
+  layerImgs: Map<string, HTMLImageElement>;
+}> {
+  const doc = JSON.parse(json) as SerDoc;
+  if (doc.version !== 1) throw new Error("unsupported .neuclip version");
+  const baseImg = await loadImg(doc.base);
+  const layers: Layer[] = [];
+  const layerImgs = new Map<string, HTMLImageElement>();
+  for (const sl of doc.layers) {
+    const { maskPng, ...rest } = sl;
+    const layer: Layer = {
+      ...rest,
+      mask: maskPng ? await pngToMask(maskPng, doc.width, doc.height) : undefined,
+    };
+    layers.push(layer);
+    if (layer.resultUrl) layerImgs.set(layer.id, await loadImg(layer.resultUrl));
+  }
+  return { width: doc.width, height: doc.height, baseImg, transform: doc.transform, layers, layerImgs };
 }
