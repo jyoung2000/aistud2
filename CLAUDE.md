@@ -196,7 +196,7 @@ the visible picture is the composite of base → layers (in array order, bottom�
   byte-identical.
 - Tier-1/2 milestones: [x] P1 layer stack · [x] P2 .neuclip save + adjustment layers + crop ·
   [x] P3 harmonize · [x] P4 iterate/re-roll · [x] P5 stronger select · [x] P6 outpaint ·
-  [x] P7 upscale/face-restore · [ ] P8 before/after diff · [ ] P9 LoRA.
+  [x] P7 upscale/face-restore · [x] P8 before/after diff · [ ] P9 LoRA.
 
 ## Phase status
 - [x] **Phase 0** — Shell & handshake (sidecar `/health`, port discovery, Tauri spawn,

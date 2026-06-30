@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Stage, Layer, Image as KImage, Line, Circle, Rect } from "react-konva";
+import { Stage, Layer, Image as KImage, Line, Circle, Rect, Group } from "react-konva";
 import { COLOR_SELECTION } from "../constants";
 import {
   fitTransform,
@@ -136,6 +136,8 @@ export function CanvasStage() {
   const [semanticText, setSemanticText] = useState("");
   const [namedSel, setNamedSel] = useState<{ name: string; data: Uint8Array }[]>([]);
   const [selNote, setSelNote] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"normal" | "split" | "diff">("normal");
+  const [swipe, setSwipe] = useState(0.5); // 0..1 fraction
 
   const composite = useMemo(() => {
     if (!img) return null;
@@ -148,6 +150,35 @@ export function CanvasStage() {
     layers.forEach((L) => L.resultUrl && m.set(L.id, L.resultUrl));
     return m;
   }, [layers]);
+
+  // changed-pixels diff overlay (composite vs base) — confirms the crop-only guarantee
+  const diff = useMemo(() => {
+    if (viewMode !== "diff" || !img || !composite || !imgPx.current) return null;
+    const w = composite.width;
+    const h = composite.height;
+    if (imgPx.current.w !== w || imgPx.current.h !== h) return null;
+    const cd = composite.getContext("2d")!.getImageData(0, 0, w, h).data;
+    const bd = imgPx.current.data;
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext("2d")!;
+    const id = ctx.createImageData(w, h);
+    let changed = 0;
+    for (let i = 0; i < w * h; i++) {
+      const o = i * 4;
+      const dd = Math.abs(cd[o] - bd[o]) + Math.abs(cd[o + 1] - bd[o + 1]) + Math.abs(cd[o + 2] - bd[o + 2]);
+      if (dd > 6) {
+        id.data[o] = 255;
+        id.data[o + 2] = 255;
+        id.data[o + 3] = 150;
+        changed++;
+      }
+    }
+    ctx.putImageData(id, 0, 0);
+    return { canvas: c, pct: (changed / (w * h)) * 100 };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, composite, img]);
 
   const cacheImgPx = (image: HTMLImageElement) => {
     const pc = document.createElement("canvas");
@@ -1256,6 +1287,11 @@ export function CanvasStage() {
         onRedo={redo}
         onExport={exportPng}
         onExportCutout={exportCutout}
+        viewMode={viewMode}
+        onViewMode={setViewMode}
+        swipe={swipe}
+        onSwipe={setSwipe}
+        diffPct={diff?.pct ?? null}
         onOpen={openFile}
         onIn={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1.25))}
         onOut={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1 / 1.25))}
@@ -1312,8 +1348,29 @@ export function CanvasStage() {
           style={{ cursor: cursorStyle }}
         >
           <Layer imageSmoothingEnabled={t.scale < 4}>
-            {img && composite && <KImage image={composite} x={0} y={0} />}
-            {maskCanvas && <KImage image={maskCanvas} x={0} y={0} listening={false} />}
+            {img && composite && viewMode === "split" ? (
+              <>
+                <KImage image={img} x={0} y={0} listening={false} />
+                <Group
+                  clipX={swipe * img.naturalWidth}
+                  clipY={0}
+                  clipWidth={img.naturalWidth - swipe * img.naturalWidth}
+                  clipHeight={img.naturalHeight}
+                >
+                  <KImage image={composite} x={0} y={0} listening={false} />
+                </Group>
+                <Line
+                  points={[swipe * img.naturalWidth, 0, swipe * img.naturalWidth, img.naturalHeight]}
+                  stroke="#ffffff"
+                  strokeWidth={2 / t.scale}
+                  listening={false}
+                />
+              </>
+            ) : (
+              img && composite && <KImage image={composite} x={0} y={0} />
+            )}
+            {viewMode === "diff" && diff && <KImage image={diff.canvas} x={0} y={0} listening={false} />}
+            {viewMode === "normal" && maskCanvas && <KImage image={maskCanvas} x={0} y={0} listening={false} />}
             {loops.map((loop, i) => (
               <Line
                 key={i}
@@ -1891,6 +1948,11 @@ function ZoomBar({
   onRedo,
   onExport,
   onExportCutout,
+  viewMode,
+  onViewMode,
+  swipe,
+  onSwipe,
+  diffPct,
   backend,
   busy,
   canRefine,
@@ -1917,6 +1979,11 @@ function ZoomBar({
   onRedo: () => void;
   onExport: () => void;
   onExportCutout: () => void;
+  viewMode: "normal" | "split" | "diff";
+  onViewMode: (m: "normal" | "split" | "diff") => void;
+  swipe: number;
+  onSwipe: (v: number) => void;
+  diffPct: number | null;
   backend: string | null;
   busy: boolean;
   canRefine: boolean;
@@ -2059,9 +2126,24 @@ function ZoomBar({
       <button style={btn} disabled={!hasImage} onClick={onActual}>
         100%
       </button>
-      <span style={{ marginLeft: "auto" }}>
-        {cursor ? `x ${cursor.x.toFixed(0)}  y ${cursor.y.toFixed(0)}` : "—"}
-      </span>
+      <span style={{ width: 1, height: 18, background: "#2a2f37", marginLeft: "auto" }} />
+      {(["normal", "split", "diff"] as const).map((m) => (
+        <button
+          key={m}
+          style={{ ...toolBtn(viewMode === m), padding: "4px 7px" }}
+          onClick={() => onViewMode(m)}
+          title={m === "normal" ? "Edit view" : m === "split" ? "Before/after swipe" : "Changed-pixels diff"}
+        >
+          {m === "normal" ? "Edit" : m === "split" ? "A|B" : "Diff"}
+        </button>
+      ))}
+      {viewMode === "split" && (
+        <input type="range" min={0} max={1} step={0.01} value={swipe} onChange={(e) => onSwipe(Number(e.target.value))} style={{ width: 80, accentColor: "#22d3ee" }} />
+      )}
+      {viewMode === "diff" && diffPct != null && (
+        <span style={{ color: "#e879f9", fontSize: 10.5 }}>changed {diffPct.toFixed(1)}%</span>
+      )}
+      <span>{cursor ? `x ${cursor.x.toFixed(0)} y ${cursor.y.toFixed(0)}` : "—"}</span>
     </div>
   );
 }
