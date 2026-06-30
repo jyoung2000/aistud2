@@ -33,9 +33,15 @@ import {
   runToCompletion,
   maskToPngDataUrl,
   resultToImage,
-  b64ToFile,
 } from "../api/generate";
 import { COLOR_GENERATION } from "../constants";
+import {
+  composite as compositeDoc,
+  newLayerId,
+  type BlendMode,
+  type Layer as DocLayer,
+} from "./document";
+import { LayersPanel } from "../panels/layersPanel";
 
 type Tool = "select" | "lasso" | "pen" | "hand";
 type LassoMode = "free" | "poly" | "magnetic";
@@ -95,6 +101,25 @@ export function CanvasStage() {
   const [prompt, setPrompt] = useState("");
   const [genStatus, setGenStatus] = useState<"idle" | "busy" | "polling" | "done" | "failed">("idle");
   const [history, setHistory] = useState<{ url: string; prompt: string }[]>([]);
+
+  // layer document — `img` is the base (never replaced after open); edits become layers.
+  const [layers, setLayers] = useState<DocLayer[]>([]);
+  const layerImgs = useRef<Map<string, HTMLImageElement>>(new Map());
+  const [imgVer, setImgVer] = useState(0); // bump when a layer image finishes loading
+  const [activeLayer, setActiveLayer] = useState<string | null>(null);
+  const [baseThumb, setBaseThumb] = useState<string | null>(null);
+
+  const composite = useMemo(() => {
+    if (!img) return null;
+    return compositeDoc(img, img.naturalWidth, img.naturalHeight, layers, layerImgs.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [img, layers, imgVer]);
+
+  const thumbs = useMemo(() => {
+    const m = new Map<string, string>();
+    layers.forEach((L) => L.resultUrl && m.set(L.id, L.resultUrl));
+    return m;
+  }, [layers]);
 
   // gesture refs (avoid re-renders mid-drag)
   const drag = useRef<{ start: Pt; startT: ViewTransform; pan: boolean; moved: boolean; down: Pt } | null>(null);
@@ -232,7 +257,7 @@ export function CanvasStage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mask, img, imageId, backend]);
+  }, [mask, img, imageId, backend, layers, activeLayer]);
 
   const maskCanvas = useMemo(
     () => (mask && !mask.isEmpty() ? maskToCanvas(mask) : null),
@@ -261,6 +286,19 @@ export function CanvasStage() {
       setMask(new MaskBuffer(image.naturalWidth, image.naturalHeight));
       setT(fitTransform(image.naturalWidth, image.naturalHeight, vp.w, vp.h));
       setSamPoints([]);
+      // reset the layer document for the new base
+      setLayers([]);
+      layerImgs.current.clear();
+      setActiveLayer(null);
+      undoStack.current = [];
+      redoStack.current = [];
+      // base thumbnail for the layers panel
+      const tc = document.createElement("canvas");
+      const s = 80 / Math.max(image.naturalWidth, image.naturalHeight);
+      tc.width = Math.max(1, Math.round(image.naturalWidth * s));
+      tc.height = Math.max(1, Math.round(image.naturalHeight * s));
+      tc.getContext("2d")!.drawImage(image, 0, 0, tc.width, tc.height);
+      setBaseThumb(tc.toDataURL("image/png"));
       URL.revokeObjectURL(url);
     };
     image.src = url;
@@ -592,11 +630,24 @@ export function CanvasStage() {
   };
 
   // --- history (undo/redo) — selection commits + edits only; zoom/pan stay off the stack ---
-  type Snap = { mask: MaskBuffer | null; img: HTMLImageElement | null; imageId: string | null; backend: string | null };
+  type Snap = {
+    mask: MaskBuffer | null;
+    imageId: string | null;
+    backend: string | null;
+    layers: DocLayer[];
+    activeLayer: string | null;
+  };
   const undoStack = useRef<Snap[]>([]);
   const redoStack = useRef<Snap[]>([]);
   const [, setHistTick] = useState(0);
-  const snapshot = (): Snap => ({ mask: mask ? mask.clone() : null, img, imageId, backend });
+  const cloneLayer = (L: DocLayer): DocLayer => ({ ...L, mask: L.mask ? new Uint8Array(L.mask) : undefined });
+  const snapshot = (): Snap => ({
+    mask: mask ? mask.clone() : null,
+    imageId,
+    backend,
+    layers: layers.map(cloneLayer),
+    activeLayer,
+  });
   const pushHistory = () => {
     undoStack.current.push(snapshot());
     if (undoStack.current.length > 50) undoStack.current.shift();
@@ -605,9 +656,11 @@ export function CanvasStage() {
   };
   const restore = (s: Snap) => {
     setMask(s.mask ? s.mask.clone() : null);
-    setImg(s.img);
     setImageId(s.imageId);
     setBackend(s.backend);
+    setLayers(s.layers.map(cloneLayer));
+    setActiveLayer(s.activeLayer);
+    setImgVer((v) => v + 1);
     setSamPoints([]);
     cancelLasso();
     cancelPen();
@@ -650,7 +703,52 @@ export function CanvasStage() {
     c.toBlob((b) => b && downloadBlob(b, "neuclip-cutout.png"), "image/png");
   };
 
-  // crop -> (mock model) -> feathered composite; result becomes the new base image.
+  // --- layer ops ---
+  const updateLayer = (id: string, patch: Partial<DocLayer>) =>
+    setLayers((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  const toggleVisible = (id: string) => {
+    pushHistory();
+    const cur = layers.find((l) => l.id === id);
+    updateLayer(id, { visible: !cur?.visible });
+    setImgVer((v) => v + 1);
+  };
+  const setLayerOpacity = (id: string, v: number) => {
+    updateLayer(id, { opacity: v });
+    setImgVer((x) => x + 1);
+  };
+  const setLayerBlend = (id: string, m: BlendMode) => {
+    pushHistory();
+    updateLayer(id, { blendMode: m });
+    setImgVer((v) => v + 1);
+  };
+  const deleteLayer = (id: string) => {
+    pushHistory();
+    setLayers((ls) => ls.filter((l) => l.id !== id));
+    if (activeLayer === id) setActiveLayer(null);
+    setImgVer((v) => v + 1);
+  };
+  const reorderLayer = (id: string, dir: -1 | 1) => {
+    pushHistory();
+    setLayers((ls) => {
+      const i = ls.findIndex((l) => l.id === id);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= ls.length) return ls;
+      const a = [...ls];
+      [a[i], a[j]] = [a[j], a[i]];
+      return a;
+    });
+    setImgVer((v) => v + 1);
+  };
+  const editLayer = (id: string) => {
+    const L = layers.find((l) => l.id === id);
+    if (!L || !img) return;
+    setActiveLayer(id);
+    if (L.source) setPrompt(L.source.prompt);
+    if (L.mask) setMask(new MaskBuffer(img.naturalWidth, img.naturalHeight, new Uint8Array(L.mask)));
+    setTool("select");
+  };
+
+  // crop -> (mock model) -> feathered composite; result becomes a new ai-edit layer.
   const generateNow = async () => {
     if (!imageId || !mask || mask.isEmpty()) return;
     pushHistory();
@@ -661,17 +759,36 @@ export function CanvasStage() {
       const done = await runToCompletion(job, (s) =>
         setGenStatus(s === "polling" ? "polling" : "busy")
       );
-      if (done.status === "completed" && done.result_png) {
+      if (done.status === "completed" && done.result_png && img && mask) {
         const im = await resultToImage(done.result_png);
-        setImg(im);
+        const id = newLayerId();
+        layerImgs.current.set(id, im);
+        const n = layers.filter((l) => l.kind === "ai-edit").length + 1;
+        const layer: DocLayer = {
+          id,
+          name: `AI edit ${n}`,
+          visible: true,
+          opacity: 1,
+          blendMode: "normal",
+          kind: "ai-edit",
+          mask: new Uint8Array(mask.data),
+          resultUrl: `data:image/png;base64,${done.result_png}`,
+          source: {
+            model: done.mode === "mock" ? "mock" : "wavespeed",
+            prompt,
+            seed: 0,
+            params: {},
+            sendRegion: (done.region as [number, number, number, number]) ?? [0, 0, img.naturalWidth - 1, img.naturalHeight - 1],
+          },
+        };
+        setLayers((ls) => [...ls, layer]); // top of stack
+        setActiveLayer(id);
+        setImgVer((v) => v + 1);
         setHistory((h) =>
           [{ url: `data:image/png;base64,${done.result_png}`, prompt }, ...h].slice(0, 12)
         );
-        // re-upload so further edits compound on this result
-        const r = await loadImageToSidecar(await b64ToFile(done.result_png));
-        setImageId(r.id);
-        setBackend(r.backend);
-        setMask(new MaskBuffer(im.naturalWidth, im.naturalHeight));
+        // the selection is captured on the layer; clear the working mask
+        setMask(new MaskBuffer(img.naturalWidth, img.naturalHeight));
         setSamPoints([]);
         setGenStatus("done");
       } else {
@@ -692,7 +809,23 @@ export function CanvasStage() {
     : "crosshair";
 
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+    <div style={{ flex: 1, display: "flex", minWidth: 0 }}>
+      {img && (
+        <LayersPanel
+          layers={layers}
+          activeId={activeLayer}
+          thumbs={thumbs}
+          baseThumb={baseThumb}
+          onSelect={setActiveLayer}
+          onToggleVisible={toggleVisible}
+          onOpacity={setLayerOpacity}
+          onBlend={setLayerBlend}
+          onDelete={deleteLayer}
+          onReorder={reorderLayer}
+          onEdit={editLayer}
+        />
+      )}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
       <ZoomBar
         zoom={t.scale}
         cursor={cursor}
@@ -754,7 +887,7 @@ export function CanvasStage() {
           style={{ cursor: cursorStyle }}
         >
           <Layer imageSmoothingEnabled={t.scale < 4}>
-            {img && <KImage image={img} x={0} y={0} />}
+            {img && composite && <KImage image={composite} x={0} y={0} />}
             {maskCanvas && <KImage image={maskCanvas} x={0} y={0} listening={false} />}
             {loops.map((loop, i) => (
               <Line
@@ -887,8 +1020,11 @@ export function CanvasStage() {
         canGenerate={!!imageId && !!mask && !mask.isEmpty() && genStatus !== "busy" && genStatus !== "polling"}
         onGenerate={generateNow}
         history={history}
-        onPick={(url) => resultToImage(url).then(setImg)}
+        onPick={() => {
+          /* layers are the source of truth now; result thumbnails are informational */
+        }}
       />
+      </div>
     </div>
   );
 }

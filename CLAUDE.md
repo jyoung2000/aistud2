@@ -164,6 +164,28 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
   target, "CPU" in the headless container) — never hardcoded.
 - Ports/paths/secrets via env with sane fallbacks; nothing hardcoded.
 
+## Edit document model (non-destructive — Tier-1)
+The editor is a **layer document**, not a flattened image. The base image is NEVER mutated;
+the visible picture is the composite of base → layers (in array order, bottom→top).
+- `frontend/src/canvas/document.ts`: `NeuDocument { width, height, baseImageRef, layers[],
+  selections? }` and `Layer { id, name, visible, opacity, blendMode, kind:'base'|'ai-edit'|
+  'adjustment'|'outpaint', mask?(image-space binary alpha), resultUrl?(full-doc pixels),
+  source?{ model, prompt, seed, params, sendRegion, reference? }, harmonize? }`. `composite()`
+  renders base then each visible layer's pixels clipped to its mask at opacity + blend mode
+  (canvas globalCompositeOperation).
+- Every AI edit (crop-edit-composite) **pushes an `ai-edit` layer** carrying its full `source`
+  spec + the selection mask + the composited result; edits are generated against the BASE so
+  they're independent (non-overlapping edits fully so; overlapping stack top-most). Re-open
+  ("edit") loads the layer's prompt + mask back into the tools.
+- `frontend/src/canvas/canvasStage.tsx`: `img` is the immutable base; `layers` + a
+  `layerImgs` cache → `composite` canvas is what Konva renders. Undo/redo snapshots include
+  the layer array (+ mask); zoom/pan stay off the stack.
+- `frontend/src/panels/layersPanel.tsx`: per-layer thumbnail, visibility, opacity, blend
+  mode, reorder (▲▼), delete, and "edit this layer"; a locked Base row at the bottom.
+- Tier-1/2 milestones: [x] P1 layer stack · [ ] P2 .neuclip save + adjustment layers + crop ·
+  [ ] P3 harmonize · [ ] P4 iterate/re-roll · [ ] P5 stronger select · [ ] P6 outpaint ·
+  [ ] P7 upscale/face-restore · [ ] P8 before/after diff · [ ] P9 LoRA.
+
 ## Phase status
 - [x] **Phase 0** — Shell & handshake (sidecar `/health`, port discovery, Tauri spawn,
       frontend status bar, clean shutdown). Verified here: sidecar boots + `/health` on
