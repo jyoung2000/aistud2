@@ -68,7 +68,36 @@ export async function refineMask(
   return pngToMask(j.mask_png, width, height);
 }
 
+export async function fetchCostMap(
+  id: string,
+  contrast = 1
+): Promise<{ cost: Uint8Array; w: number; h: number; scale: number }> {
+  const res = await fetch(`${await baseUrl()}/livewire/costmap`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, contrast }),
+  });
+  if (!res.ok) throw new Error(`/livewire/costmap ${res.status}`);
+  const j = (await res.json()) as { cost_png: string; cost_w: number; cost_h: number; scale: number };
+  const cost = await pngToGray(j.cost_png, j.cost_w, j.cost_h);
+  return { cost, w: j.cost_w, h: j.cost_h, scale: j.scale };
+}
+
 // --- codec helpers ---
+
+async function pngToGray(b64: string, width: number, height: number): Promise<Uint8Array> {
+  const src = b64.startsWith("data:") ? b64 : `data:image/png;base64,${b64}`;
+  const img = await loadImg(src);
+  const c = document.createElement("canvas");
+  c.width = width;
+  c.height = height;
+  const ctx = c.getContext("2d")!;
+  ctx.drawImage(img, 0, 0, width, height);
+  const data = ctx.getImageData(0, 0, width, height).data;
+  const out = new Uint8Array(width * height);
+  for (let i = 0; i < out.length; i++) out[i] = data[i * 4]; // raw value 0..255
+  return out;
+}
 
 function maskToPng(mask: Uint8Array, width: number, height: number): string {
   const c = document.createElement("canvas");

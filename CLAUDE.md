@@ -188,7 +188,15 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
       backend badge (SAM 2 vs CPU). Fallback verified e2e (point→exact bbox, box→GrabCut,
       refine→soft edges). requirements.txt now installs opencv/scipy/multipart; launchers
       install full requirements.
-- [ ] Phase 4 — Lasso tools (freehand / polygonal / magnetic live-wire)
+- [x] **Phase 4** — Lasso tools. Sidecar `/livewire/costmap` (Sobel magnitude + Laplacian
+      zero-crossing → per-pixel cost, cached per image/contrast, downscaled if huge). Frontend
+      `canvas/livewire.ts` (bounded single-source Dijkstra + backtrace, `[`/`]` width),
+      `canvas/lasso.ts` (even-odd rasterize, 45° constrain). canvasStage Lasso tool with 3
+      modes (Shift+L cycles): freehand (drag samples, release closes), polygonal (click
+      anchors, Shift 45°, Backspace, Enter/dbl-click/click-start closes), magnetic live-wire
+      (snaps to edges, preview segment). All commit a closed path via the active boolean op
+      (Shift/Alt) into the shared mask. Cost map + Dijkstra unit-tested (edge cost 14 vs 255;
+      path hugs low-cost corridor).
 - [ ] Phase 5 — Manual editable selection (pen-grade)
 - [ ] Phase 6 — Edit pipeline: crop-composite + first model
 - [ ] Phase 7 — Model registry & adapters

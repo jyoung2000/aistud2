@@ -8,15 +8,19 @@ import {
   type Pt,
   type ViewTransform,
 } from "./coords";
-import { MaskBuffer } from "./maskBuffer";
+import { MaskBuffer, opFromModifiers, type BoolOp } from "./maskBuffer";
+import { rasterizePolygon, dist, constrain45, flatten } from "./lasso";
+import { LiveWire } from "./livewire";
 import {
   loadImageToSidecar,
   refineMask,
   smartSelect,
+  fetchCostMap,
   type SamPoint,
 } from "../api/select";
 
-type Tool = "select" | "hand";
+type Tool = "select" | "lasso" | "hand";
+type LassoMode = "free" | "poly" | "magnetic";
 
 function maskToCanvas(mask: MaskBuffer): HTMLCanvasElement {
   const c = document.createElement("canvas");
@@ -45,6 +49,15 @@ export function CanvasStage() {
   const [backend, setBackend] = useState<string | null>(null);
   const [samPoints, setSamPoints] = useState<SamPoint[]>([]);
   const [busy, setBusy] = useState(false);
+
+  // lasso state
+  const [lassoMode, setLassoMode] = useState<LassoMode>("magnetic");
+  const [lassoPts, setLassoPts] = useState<Pt[]>([]);
+  const [lassoCursor, setLassoCursor] = useState<Pt | null>(null);
+  const [preview, setPreview] = useState<Pt[]>([]); // magnetic live segment
+  const lassoOp = useRef<BoolOp>("replace");
+  const wire = useRef<LiveWire | null>(null);
+  const freehand = useRef(false);
 
   // gesture refs (avoid re-renders mid-drag)
   const drag = useRef<{ start: Pt; startT: ViewTransform; pan: boolean; moved: boolean; down: Pt } | null>(null);
@@ -108,11 +121,58 @@ export function CanvasStage() {
     };
   }, [vp.w, vp.h, img]);
 
+  // lasso keyboard: Shift+L cycle, Enter close, Backspace undo anchor, Esc cancel, [ ] width
+  useEffect(() => {
+    const typing = () => {
+      const el = document.activeElement;
+      return !!el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (typing()) return;
+      if (e.key === "L" && e.shiftKey) {
+        e.preventDefault();
+        setTool("lasso");
+        setLassoMode((m) => (m === "free" ? "poly" : m === "poly" ? "magnetic" : "free"));
+        cancelLasso();
+      } else if (e.key === "Enter" && lassoPts.length > 2) {
+        e.preventDefault();
+        commitLasso(lassoPts);
+      } else if (e.key === "Backspace" && lassoPts.length > 0) {
+        e.preventDefault();
+        const np = lassoPts.slice(0, -1);
+        setLassoPts(np);
+        if (lassoMode === "magnetic" && np.length) wire.current?.setSeed(np[np.length - 1]);
+      } else if (e.key === "Escape") {
+        cancelLasso();
+      } else if ((e.key === "[" || e.key === "]") && wire.current) {
+        const w = wire.current;
+        w.windowRadius = Math.max(60, Math.min(600, w.windowRadius + (e.key === "]" ? 40 : -40)));
+        if (lassoPts.length) w.setSeed(lassoPts[lassoPts.length - 1]);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lassoPts, lassoMode, mask]);
+
   const maskCanvas = useMemo(
     () => (mask && !mask.isEmpty() ? maskToCanvas(mask) : null),
     [mask]
   );
   const loops = useMemo(() => (mask ? mask.outline() : []), [mask, maskCanvas]);
+
+  const lassoDraw: Pt[] =
+    tool === "lasso" && lassoPts.length
+      ? lassoMode === "poly"
+        ? lassoCursor
+          ? [...lassoPts, lassoCursor]
+          : lassoPts
+        : lassoMode === "magnetic"
+        ? preview.length
+          ? [...lassoPts, ...preview.slice(1)]
+          : lassoPts
+        : lassoPts
+      : [];
 
   const openFile = (file: File) => {
     const url = URL.createObjectURL(file);
@@ -188,6 +248,14 @@ export function CanvasStage() {
     if (pan) {
       e.evt.preventDefault();
       setPanning(true);
+      return;
+    }
+    if (tool === "lasso" && lassoMode === "free") {
+      // freehand: drag samples points; release closes
+      const ip = screenToImage(p, t);
+      lassoOp.current = opFromModifiers(e.evt.shiftKey, e.evt.altKey);
+      freehand.current = true;
+      setLassoPts([ip]);
     }
   };
 
@@ -201,7 +269,16 @@ export function CanvasStage() {
         return;
       }
     }
-    setCursor(p ? screenToImage(p, t) : null);
+    const ip = p ? screenToImage(p, t) : null;
+    setCursor(ip);
+    if (tool === "lasso" && ip) {
+      setLassoCursor(ip);
+      if (freehand.current) {
+        setLassoPts((pts) => (pts.length === 0 || dist(pts[pts.length - 1], ip) > 2 / t.scale ? [...pts, ip] : pts));
+      } else if (lassoMode === "magnetic" && wire.current && lassoPts.length > 0) {
+        setPreview(wire.current.pathTo(ip) ?? [lassoPts[lassoPts.length - 1], ip]);
+      }
+    }
   };
 
   const endDrag = (e: any) => {
@@ -209,7 +286,19 @@ export function CanvasStage() {
     const p = ptr(e);
     drag.current = null;
     setPanning(false);
-    if (!d || d.pan || !p || !mask || !img || tool !== "select") return;
+    if (!d || d.pan || !p || !mask || !img) return;
+
+    if (tool === "lasso") {
+      const ip = screenToImage(p, t);
+      if (lassoMode === "free" && freehand.current) {
+        freehand.current = false;
+        commitLasso([...lassoPts, ip]);
+      } else if (!d.moved) {
+        void lassoClick(ip, e);
+      }
+      return;
+    }
+    if (tool !== "select") return;
 
     if (d.moved) {
       // box prompt → GrabCut / SAM box
@@ -234,6 +323,66 @@ export function CanvasStage() {
     }
   };
 
+  // --- lasso ---
+  const commitLasso = (pts: Pt[]) => {
+    if (!mask || pts.length < 3) {
+      cancelLasso();
+      return;
+    }
+    const inc = rasterizePolygon(pts, mask.width, mask.height);
+    const next = mask.clone();
+    next.apply(inc, lassoOp.current);
+    setMask(next);
+    cancelLasso();
+  };
+  const cancelLasso = () => {
+    setLassoPts([]);
+    setPreview([]);
+    setLassoCursor(null);
+    freehand.current = false;
+    wire.current = null;
+  };
+  const closeThreshold = () => 10 / t.scale; // screen px tolerance in image space
+
+  const ensureWire = async () => {
+    if (wire.current || !imageId) return;
+    try {
+      const cm = await fetchCostMap(imageId, 1.0);
+      wire.current = new LiveWire(cm.cost, cm.w, cm.h, cm.scale);
+    } catch (e) {
+      console.error("costmap failed:", e);
+    }
+  };
+
+  // a click in lasso mode (poly / magnetic anchors)
+  const lassoClick = async (ip: Pt, e: any) => {
+    if (lassoPts.length === 0) lassoOp.current = opFromModifiers(e.evt.shiftKey, e.evt.altKey);
+    const near = lassoPts.length > 2 && dist(ip, lassoPts[0]) < closeThreshold();
+
+    if (lassoMode === "poly") {
+      const prev = lassoPts[lassoPts.length - 1];
+      const pt = e.evt.shiftKey && prev ? constrain45(prev, ip) : ip;
+      if (near) commitLasso(lassoPts);
+      else setLassoPts((p) => [...p, pt]);
+      return;
+    }
+    // magnetic
+    await ensureWire();
+    if (lassoPts.length === 0) {
+      wire.current?.setSeed(ip);
+      setLassoPts([ip]);
+      return;
+    }
+    const seg = wire.current?.pathTo(ip) ?? [ip];
+    const merged = [...lassoPts, ...seg.slice(1)];
+    if (near) commitLasso(merged);
+    else {
+      setLassoPts(merged);
+      wire.current?.setSeed(ip);
+      setPreview([]);
+    }
+  };
+
   const cursorStyle = !img
     ? "default"
     : panning
@@ -250,6 +399,8 @@ export function CanvasStage() {
         hasImage={!!img}
         tool={tool}
         onTool={setTool}
+        lassoMode={lassoMode}
+        onLassoMode={setLassoMode}
         backend={backend}
         busy={busy}
         canRefine={!!mask && !mask.isEmpty()}
@@ -281,9 +432,12 @@ export function CanvasStage() {
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={endDrag}
+          onDblClick={() => {
+            if (tool === "lasso" && lassoPts.length > 2) commitLasso(lassoPts);
+          }}
           onMouseLeave={(e: any) => {
             setCursor(null);
-            if (drag.current) endDrag(e);
+            if (drag.current && drag.current.pan) endDrag(e);
           }}
           style={{ cursor: cursorStyle }}
         >
@@ -315,6 +469,38 @@ export function CanvasStage() {
                 listening={false}
               />
             ))}
+            {tool === "lasso" && lassoPts.length > 0 && (
+              <>
+                <Line
+                  points={flatten(lassoDraw)}
+                  stroke={COLOR_SELECTION}
+                  strokeWidth={1.5 / t.scale}
+                  listening={false}
+                  perfectDrawEnabled={false}
+                />
+                {lassoMode !== "free" &&
+                  lassoPts.map((p, i) => (
+                    <Circle
+                      key={i}
+                      x={p.x}
+                      y={p.y}
+                      radius={3 / t.scale}
+                      fill="#22d3ee"
+                      listening={false}
+                    />
+                  ))}
+                {lassoPts.length > 2 && (
+                  <Circle
+                    x={lassoPts[0].x}
+                    y={lassoPts[0].y}
+                    radius={6 / t.scale}
+                    stroke={COLOR_SELECTION}
+                    strokeWidth={1.5 / t.scale}
+                    listening={false}
+                  />
+                )}
+              </>
+            )}
           </Layer>
         </Stage>
       </div>
@@ -328,6 +514,8 @@ function ZoomBar({
   hasImage,
   tool,
   onTool,
+  lassoMode,
+  onLassoMode,
   backend,
   busy,
   canRefine,
@@ -344,6 +532,8 @@ function ZoomBar({
   hasImage: boolean;
   tool: Tool;
   onTool: (t: Tool) => void;
+  lassoMode: LassoMode;
+  onLassoMode: (m: LassoMode) => void;
   backend: string | null;
   busy: boolean;
   canRefine: boolean;
@@ -399,6 +589,25 @@ function ZoomBar({
       <button style={toolBtn(tool === "select")} onClick={() => onTool("select")} title="Select (V)">
         ⬚ Select
       </button>
+      <button
+        style={toolBtn(tool === "lasso")}
+        onClick={() => onTool("lasso")}
+        title="Lasso — Shift+L cycles mode; Enter/double-click closes; Esc cancels"
+      >
+        ◠ Lasso
+      </button>
+      {tool === "lasso" && (
+        <select
+          value={lassoMode}
+          onChange={(e) => onLassoMode(e.target.value as LassoMode)}
+          style={{ ...btn, padding: "3px 6px" }}
+          title="Lasso mode (Shift+L)"
+        >
+          <option value="free">Freehand</option>
+          <option value="poly">Polygonal</option>
+          <option value="magnetic">Magnetic</option>
+        </select>
+      )}
       <button style={toolBtn(tool === "hand")} onClick={() => onTool("hand")} title="Hand — pan (H, or hold Space)">
         ✋ Hand
       </button>

@@ -118,6 +118,33 @@ def select(body: SelectIn) -> dict:
     }
 
 
+class CostMapIn(BaseModel):
+    id: str
+    contrast: float = 1.0
+
+
+@app.post("/livewire/costmap")
+def livewire_costmap(body: CostMapIn) -> dict:
+    try:
+        session = imaging.require_active(body.id)
+    except KeyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    from app.livewire import cost_map
+
+    cache_key = f"costmap:{body.contrast:.2f}"
+    cached = session.extra.get(cache_key)
+    if cached is None:
+        cost, scale = cost_map(session.rgb, contrast=body.contrast)
+        cached = {
+            "cost_png": imaging.png_to_base64(cost),
+            "cost_w": int(cost.shape[1]),
+            "cost_h": int(cost.shape[0]),
+            "scale": scale,
+        }
+        session.extra[cache_key] = cached
+    return cached
+
+
 @app.post("/refine")
 def refine(body: RefineIn) -> dict:
     try:
