@@ -136,6 +136,20 @@ export async function finishImage(
   return await res.json();
 }
 
+export async function fillBehind(
+  id: string,
+  holePng: string,
+  opts: { mock?: boolean; model_slug?: string; prompt?: string } = {}
+): Promise<{ status: string; image_png?: string; job_id?: string }> {
+  const res = await fetch(`${await baseUrl()}/fill_behind`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, hole_png: holePng, ...opts }),
+  });
+  if (!res.ok) throw new Error(`/fill_behind ${res.status}`);
+  return await res.json();
+}
+
 export async function b64ToFile(b64: string, name = "edit.png"): Promise<File> {
   const src = b64.startsWith("data:") ? b64 : `data:image/png;base64,${b64}`;
   const blob = await (await fetch(src)).blob();

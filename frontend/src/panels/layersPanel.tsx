@@ -33,6 +33,7 @@ export function LayersPanel({
   onDuplicateSel,
   onDeleteSel,
   onSelOpacity,
+  onFillBehind,
 }: {
   layers: Layer[];
   activeId: string | null;
@@ -53,8 +54,10 @@ export function LayersPanel({
   onDuplicateSel: () => void;
   onDeleteSel: () => void;
   onSelOpacity: (v: number) => void;
+  onFillBehind: (id: string) => void;
 }) {
   const selCount = selectedIds.length;
+  const hasDecomposed = layers.some((l) => l.kind === "decomposed");
   // Compositing order is bottom→top in the array; display top-first.
   const ordered = [...layers].reverse();
   return (
@@ -195,6 +198,15 @@ export function LayersPanel({
                     </button>
                   </>
                 )}
+                {L.kind === "decomposed" && !/^background/i.test(L.name) && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onFillBehind(L.id); }}
+                    title="Fill behind — inpaint the background hole so this subject is freely movable (a generation, has a cost)"
+                    style={{ ...smallBtn, color: "#f2a33c", borderColor: "#f2a33c55" }}
+                  >
+                    fill ⤓
+                  </button>
+                )}
                 <button onClick={(e) => { e.stopPropagation(); onDelete(L.id); }} title="Delete layer" style={{ ...smallBtn, color: "#ef4444" }}>
                   ✕
                 </button>
@@ -227,6 +239,13 @@ export function LayersPanel({
           );
         })}
       </div>
+
+      {hasDecomposed && (
+        <div style={{ padding: "6px 10px", fontSize: 9.5, color: "#7d7252", lineHeight: 1.4, borderTop: "1px solid #20242b" }}>
+          Auto-separated layers &amp; fill-behind are AI estimates — a smart starting point to
+          refine by hand, not guaranteed-perfect cutouts.
+        </div>
+      )}
 
       {/* base row */}
       <div style={{ borderTop: "1px solid #20242b", padding: 8, display: "flex", alignItems: "center", gap: 8 }}>

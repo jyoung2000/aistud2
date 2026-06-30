@@ -56,7 +56,7 @@ import {
   type LayerGroup,
   type AdjustSpec,
 } from "./document";
-import { b64ToFile, outpaint, finishImage } from "../api/generate";
+import { b64ToFile, outpaint, finishImage, fillBehind } from "../api/generate";
 import { LayersPanel } from "../panels/layersPanel";
 
 type Tool = "select" | "lasso" | "pen" | "wand" | "move" | "hand";
@@ -205,6 +205,20 @@ export function CanvasStage() {
     return { canvas: c, pct: (changed / (w * h)) * 100 };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, composite, img]);
+
+  // checkerboard shown through transparent holes when decomposed (honest occlusion)
+  const checkerTile = useMemo(() => {
+    const c = document.createElement("canvas");
+    c.width = 16;
+    c.height = 16;
+    const x = c.getContext("2d")!;
+    x.fillStyle = "#2a2f37";
+    x.fillRect(0, 0, 16, 16);
+    x.fillStyle = "#1f232b";
+    x.fillRect(0, 0, 8, 8);
+    x.fillRect(8, 8, 8, 8);
+    return c;
+  }, []);
 
   const cacheImgPx = (image: HTMLImageElement) => {
     const pc = document.createElement("canvas");
@@ -1056,6 +1070,39 @@ export function CanvasStage() {
     setSamPoints([]);
   };
 
+  // --- occlusion fill: inpaint the Background hole behind a subject layer ---
+  const fillBehindLayer = async (subjectId: string) => {
+    if (!imageId || !img) return;
+    const subj = layers.find((L) => L.id === subjectId);
+    const bg = layers.find((L) => L.kind === "decomposed" && /^background/i.test(L.name));
+    if (!subj?.mask || !bg) return;
+    setDecomposing(true);
+    try {
+      const holePng = maskToPngDataUrl(subj.mask, img.naturalWidth, img.naturalHeight);
+      const r = await fillBehind(imageId, holePng, { mock: true });
+      if (r.status === "completed" && r.image_png) {
+        const im = await resultToImage(r.image_png);
+        layerImgs.current.set(bg.id, im);
+        // the background now covers the hole too
+        const W = img.naturalWidth;
+        const H = img.naturalHeight;
+        const newMask = bg.mask ? new Uint8Array(bg.mask) : new Uint8Array(W * H).fill(255);
+        for (let i = 0; i < newMask.length; i++) if (subj.mask![i]) newMask[i] = 255;
+        pushHistory();
+        updateLayer(bg.id, {
+          resultUrl: `data:image/png;base64,${r.image_png}`,
+          mask: newMask,
+          bounds: boundsFromMask(newMask, W, H) ?? undefined,
+        });
+        setImgVer((v) => v + 1);
+      }
+    } catch (e) {
+      console.error("fill behind failed:", e);
+    } finally {
+      setDecomposing(false);
+    }
+  };
+
   // --- Move tool: layer selection + transform (distinct from pixel selection) ---
   const dims = (): [number, number] => [img?.naturalWidth ?? 0, img?.naturalHeight ?? 0];
   const layerAt = (ip: Pt): string | null => {
@@ -1559,6 +1606,7 @@ export function CanvasStage() {
           onDuplicateSel={duplicateSelected}
           onDeleteSel={deleteSelected}
           onSelOpacity={setSelOpacity}
+          onFillBehind={fillBehindLayer}
         />
       )}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -1664,6 +1712,16 @@ export function CanvasStage() {
           style={{ cursor: cursorStyle }}
         >
           <Layer imageSmoothingEnabled={t.scale < 4}>
+            {decomposed && img && viewMode === "normal" && (
+              <Rect
+                x={0}
+                y={0}
+                width={img.naturalWidth}
+                height={img.naturalHeight}
+                fillPatternImage={checkerTile as unknown as HTMLImageElement}
+                listening={false}
+              />
+            )}
             {img && composite && viewMode === "split" ? (
               <>
                 <KImage image={img} x={0} y={0} listening={false} />

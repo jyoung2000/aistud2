@@ -194,7 +194,13 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
   row click (Shift=range, Cmd/Ctrl=add) drives the same set (`selectLayerRow`). Helpers in
   `document.ts`: forward/inverse point, transformedBounds, unionBounds, rectsIntersect.
 - Auto-layer milestones: [x] P1 model (bounds/transform/groups) · [x] P2 auto-decompose ·
-  [x] P3 Move tool · [x] P4 drag-to-select layers · [x] P5 multi-layer ops · [ ] P6 fill-behind.
+  [x] P3 Move tool · [x] P4 drag-to-select layers · [x] P5 multi-layer ops · [x] P6 fill-behind.
+- P6 occlusion fill: `/fill_behind` inpaints the Background's subject-shaped hole (FLUX Fill
+  on target; Telea mock — dilates the hole, reconstructs background). Per-subject-layer
+  "fill ⤓" action updates the Background layer's pixels + expands its mask over the hole, so
+  hiding/moving the subject leaves no hole. Until filled, a **checkerboard** renders behind
+  the composite when decomposed so holes are shown honestly. In-panel caveat: auto-decompose
+  + fill are AI estimates to refine, not perfect cutouts.
 - P5 multi-layer ops: eye toggle affects all selected (Alt-click eye = solo/isolate); panel
   multi-select (click / Shift=range / Cmd-Ctrl=add, synced with canvas); Group selected
   (`Document.groups`, persisted in `.neuclip`); align L/Cx/R/T/Cy/B via transformedBounds;

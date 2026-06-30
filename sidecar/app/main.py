@@ -256,6 +256,55 @@ def decompose(body: DecomposeIn) -> dict:
     return {"regions": out, "backend": _selector.backend, "width": session.width, "height": session.height}
 
 
+class FillBehindIn(BaseModel):
+    id: str
+    hole_png: str  # subject mask (the hole to fill in the background)
+    prompt: str = ""
+    model_slug: Optional[str] = None
+    mock: bool = False
+
+
+@app.post("/fill_behind")
+def fill_behind(body: FillBehindIn) -> dict:
+    try:
+        session = imaging.require_active(body.id)
+    except KeyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    import cv2
+    import numpy as np
+
+    base = session.rgb
+    hole = imaging.base64_to_gray(body.hole_png)
+    if hole.shape[:2] != (session.height, session.width):
+        raise HTTPException(status_code=400, detail="hole size != image size")
+    # dilate the hole a touch so the fill comfortably covers the subject's edge
+    hole = cv2.dilate((hole > 0).astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+
+    key = settings_store.get_secret("wavespeed_api_key")
+    if (not body.mock) and key and body.model_slug:
+        try:
+            crop, cmask, region = compose.crop_region(base, hole, 0.12)
+            slug, payload = registry.build_payload(
+                body.model_slug, crop, cmask, body.prompt or "clean background, continue the scene", {}
+            )
+            pid = wavespeed.submit(slug, payload, key)
+            job = jobs.create(
+                rgb=base, region=region, alpha=compose.feather_alpha(cmask, 2.5),
+                crop_rgb=crop, crop_mask=cmask, prompt=body.prompt, slug=slug,
+            )
+            job.mode = "wavespeed"
+            job.status = "polling"
+            job.prediction_id = pid
+            return {"job_id": job.id, "status": "polling"}
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"fill submit failed: {e}")
+
+    # mock: Telea inpaint reconstructs the background behind the subject
+    filled_bgr = cv2.inpaint(cv2.cvtColor(base, cv2.COLOR_RGB2BGR), hole, 8, cv2.INPAINT_TELEA)
+    filled = cv2.cvtColor(filled_bgr, cv2.COLOR_BGR2RGB)
+    return {"status": "completed", "image_png": imaging.png_to_base64(filled, "RGB")}
+
+
 @app.post("/refine")
 def refine(body: RefineIn) -> dict:
     try:
