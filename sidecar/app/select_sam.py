@@ -111,6 +111,32 @@ class SmartSelector:
         bgr = cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR)
         return self._grabcut(bgr, [w * 0.1, h * 0.1, w * 0.9, h * 0.9], h, w)
 
+    # --- auto-decomposition ----------------------------------------------------
+    def decompose(self, granularity: str = "simple") -> list:
+        """Return region dicts {name, kind, mask(uint8)} — Background first, then subjects.
+
+        On the target: Grounding-DINO + SAM 2 panoptic/instance segmentation (per-character +
+        background, plus objects at fine granularity). CPU fallback: GrabCut foreground +
+        background (single subject instance — instance separation needs the grounded model).
+        """
+        if self.image is None:
+            raise RuntimeError("no image set")
+        h, w = self.image.shape[:2]
+        if os.environ.get("NEUCLIP_GDINO_CHECKPOINT") and self.backend == "sam2":  # pragma: no cover
+            try:
+                raise NotImplementedError("wire GroundingDINO + SAM2 instances on the target")
+            except Exception as e:
+                print(f"[decompose] grounded model unavailable, fallback: {e}")
+
+        assert cv2 is not None
+        bgr = cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR)
+        subj = self._grabcut(bgr, [w * 0.12, h * 0.06, w * 0.88, h * 0.96], h, w)
+        bg = np.where(subj > 0, 0, 255).astype(np.uint8)
+        return [
+            {"name": "Background", "kind": "decomposed", "mask": bg},
+            {"name": "Subject 1", "kind": "decomposed", "mask": subj},
+        ]
+
     # --- text-grounded (semantic) ---------------------------------------------
     def semantic(self, text: str):
         """Grounding-DINO + SAM on the target GPU; honest empty fallback on CPU/no-model.

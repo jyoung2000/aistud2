@@ -12,7 +12,7 @@ export type BlendMode =
   | "lighten"
   | "difference";
 
-export type LayerKind = "base" | "ai-edit" | "adjustment" | "outpaint";
+export type LayerKind = "base" | "ai-edit" | "adjustment" | "outpaint" | "decomposed";
 
 export type Region = [number, number, number, number]; // x0,y0,x1,y1 image space
 export type LayerBounds = [number, number, number, number]; // x,y,w,h image space
@@ -178,13 +178,16 @@ export function composite(
   width: number,
   height: number,
   layers: Layer[],
-  images: Map<string, HTMLImageElement>
+  images: Map<string, HTMLImageElement>,
+  opts: { drawBase?: boolean } = {}
 ): HTMLCanvasElement {
   const out = document.createElement("canvas");
   out.width = width;
   out.height = height;
   const ctx = out.getContext("2d")!;
-  ctx.drawImage(base, 0, 0, width, height);
+  // When decomposed, the base is reconstructed by the layers (Background + subjects); the
+  // base image itself is NOT drawn, so hiding a subject reveals an honest transparent hole.
+  if (opts.drawBase !== false) ctx.drawImage(base, 0, 0, width, height);
 
   for (const L of layers) {
     if (!L.visible || L.opacity <= 0) continue;

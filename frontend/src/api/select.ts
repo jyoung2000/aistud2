@@ -71,6 +71,36 @@ export async function refineMask(
   return pngToMask(j.mask_png, width, height);
 }
 
+export interface DecomposedRegion {
+  name: string;
+  kind: string;
+  bounds: [number, number, number, number]; // x,y,w,h
+  data: Uint8Array; // binary mask
+}
+
+export async function decompose(
+  id: string,
+  granularity: "simple" | "fine" = "simple"
+): Promise<{ regions: DecomposedRegion[]; backend: string; width: number; height: number }> {
+  const res = await fetch(`${await baseUrl()}/decompose`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, granularity }),
+  });
+  if (!res.ok) throw new Error(`/decompose ${res.status}`);
+  const j = (await res.json()) as {
+    regions: { name: string; kind: string; bounds: [number, number, number, number]; mask_png: string }[];
+    backend: string;
+    width: number;
+    height: number;
+  };
+  const regions: DecomposedRegion[] = [];
+  for (const r of j.regions) {
+    regions.push({ name: r.name, kind: r.kind, bounds: r.bounds, data: await pngToMask(r.mask_png, j.width, j.height) });
+  }
+  return { regions, backend: j.backend, width: j.width, height: j.height };
+}
+
 export async function fetchCostMap(
   id: string,
   contrast = 1

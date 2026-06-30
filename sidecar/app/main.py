@@ -225,6 +225,37 @@ def outpaint(body: OutpaintIn) -> dict:
     }
 
 
+class DecomposeIn(BaseModel):
+    id: str
+    granularity: str = "simple"  # "simple" (subject+bg) | "fine" (every object)
+
+
+@app.post("/decompose")
+def decompose(body: DecomposeIn) -> dict:
+    try:
+        session = imaging.require_active(body.id)
+    except KeyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    import numpy as np
+
+    _selector.set_image(session.rgb, session.image_id)
+    regions = _selector.decompose(body.granularity)
+    out = []
+    for r in regions:
+        m = r["mask"]
+        # refine the cut edge (BiRefNet on target; morphological feather fallback)
+        alpha = _refiner.refine(session.rgb, m)
+        binm = (alpha > 127).astype(np.uint8) * 255
+        ys, xs = np.where(binm > 0)
+        bounds = (
+            [int(xs.min()), int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)]
+            if xs.size
+            else [0, 0, session.width, session.height]
+        )
+        out.append({"name": r["name"], "kind": r["kind"], "mask_png": imaging.png_to_base64(binm), "bounds": bounds})
+    return {"regions": out, "backend": _selector.backend, "width": session.width, "height": session.height}
+
+
 @app.post("/refine")
 def refine(body: RefineIn) -> dict:
     try:

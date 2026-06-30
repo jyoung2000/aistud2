@@ -26,6 +26,7 @@ import {
   refineMask,
   smartSelect,
   fetchCostMap,
+  decompose,
   type SamPoint,
 } from "../api/select";
 import {
@@ -131,6 +132,8 @@ export function CanvasStage() {
   const [imgVer, setImgVer] = useState(0); // bump when a layer image finishes loading
   const [activeLayer, setActiveLayer] = useState<string | null>(null);
   const [baseThumb, setBaseThumb] = useState<string | null>(null);
+  const [decomposed, setDecomposed] = useState(false);
+  const [decomposing, setDecomposing] = useState(false);
   const [docTransform, setDocTransform] = useState<DocTransform>({ straighten: 0 });
   const imgPx = useRef<ImgPx | null>(null); // cached base pixels for magic wand
   const [wandTol, setWandTol] = useState(0.15);
@@ -143,9 +146,11 @@ export function CanvasStage() {
 
   const composite = useMemo(() => {
     if (!img) return null;
-    return compositeDoc(img, img.naturalWidth, img.naturalHeight, layers, layerImgs.current);
+    return compositeDoc(img, img.naturalWidth, img.naturalHeight, layers, layerImgs.current, {
+      drawBase: !decomposed,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [img, layers, imgVer]);
+  }, [img, layers, imgVer, decomposed]);
 
   const thumbs = useMemo(() => {
     const m = new Map<string, string>();
@@ -360,6 +365,7 @@ export function CanvasStage() {
       setLayers([]);
       layerImgs.current.clear();
       setActiveLayer(null);
+      setDecomposed(false);
       undoStack.current = [];
       redoStack.current = [];
       // base thumbnail for the layers panel
@@ -381,6 +387,8 @@ export function CanvasStage() {
       .then((r) => {
         setImageId(r.id);
         setBackend(r.backend);
+        // auto-separate subjects/background into editable layers (an editable proposal)
+        void runDecompose("simple", r.id);
       })
       .catch((e) => console.error("load to sidecar failed:", e));
   };
@@ -888,6 +896,42 @@ export function CanvasStage() {
     c.toBlob((b) => b && downloadBlob(b, "neuclip-cutout.png"), "image/png");
   };
 
+  // --- auto-decomposition: AI separates subjects/background into editable layers ---
+  const runDecompose = async (granularity: "simple" | "fine", id?: string) => {
+    const useId = id ?? imageId;
+    if (!useId || !img) return;
+    setDecomposing(true);
+    try {
+      const r = await decompose(useId, granularity);
+      const baseUrl = imgToDataUrl(img);
+      const newLayers: DocLayer[] = r.regions.map((reg) => {
+        const lid = newLayerId();
+        layerImgs.current.set(lid, img); // decomposed layers draw the base pixels, clipped to their mask
+        return {
+          id: lid,
+          name: reg.name,
+          visible: true,
+          opacity: 1,
+          blendMode: "normal" as BlendMode,
+          kind: "decomposed" as const,
+          mask: reg.data,
+          resultUrl: baseUrl,
+          bounds: reg.bounds,
+          transform: { ...IDENTITY_TRANSFORM },
+        };
+      });
+      pushHistory();
+      setLayers(newLayers);
+      setDecomposed(true);
+      setActiveLayer(newLayers[newLayers.length - 1]?.id ?? null);
+      setImgVer((v) => v + 1);
+    } catch (e) {
+      console.error("decompose failed:", e);
+    } finally {
+      setDecomposing(false);
+    }
+  };
+
   // --- iterate: re-roll a layer in place, seed variations into a tray ---
   const reroll = async (id: string) => {
     const L = layers.find((l) => l.id === id);
@@ -1053,6 +1097,7 @@ export function CanvasStage() {
     setImg(d.baseImg);
     setLayers(d.layers);
     layerImgs.current = d.layerImgs;
+    setDecomposed(d.layers.some((l) => l.kind === "decomposed"));
     setDocTransform(d.transform ?? { straighten: 0 });
     setMask(new MaskBuffer(d.width, d.height));
     setActiveLayer(null);
@@ -1265,6 +1310,8 @@ export function CanvasStage() {
         hasCrop={!!docTransform.crop}
         onExtend={outpaintTo}
         onFinish={finishAndExport}
+        decomposing={decomposing}
+        onDecompose={runDecompose}
       />
       <ZoomBar
         zoom={t.scale}
@@ -1698,6 +1745,8 @@ function FileBar({
   hasCrop,
   onExtend,
   onFinish,
+  decomposing,
+  onDecompose,
 }: {
   hasImage: boolean;
   onSave: () => void;
@@ -1709,6 +1758,8 @@ function FileBar({
   hasCrop: boolean;
   onExtend: (ratio: number) => void;
   onFinish: (scale: number, faceRestore: boolean) => void;
+  decomposing: boolean;
+  onDecompose: (g: "simple" | "fine") => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [finishFace, setFinishFace] = useState(false);
@@ -1759,6 +1810,14 @@ function FileBar({
       <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
       <button style={btn} disabled={!hasImage} onClick={onAddAdjustment} title="Add adjustment layer">
         + Adjustment
+      </button>
+      <button
+        style={{ ...btn, borderColor: "#f2a33c55", color: "#f2a33c" }}
+        disabled={!hasImage || decomposing}
+        onClick={() => onDecompose("simple")}
+        title="AI auto-separate subjects + background into editable layers"
+      >
+        {decomposing ? "separating…" : "⛶ Auto-separate"}
       </button>
       <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
       <span>Crop</span>

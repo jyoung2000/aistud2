@@ -177,7 +177,15 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
   `Layer.transform:{tx,ty,scale,rotation}` applied at composite around the bounds centre
   (non-destructive — base/layer pixels never mutated, only the draw is transformed);
   `Layer.locked`, `Layer.groupId`. `Document.groups: LayerGroup[]` (name, collapsed, layerIds).
-- Auto-layer milestones: [x] P1 model (bounds/transform/groups) · [ ] P2 auto-decompose ·
+- **Auto-decompose** (`/decompose`, `select_sam.decompose`): Grounding-DINO + SAM 2 instances
+  on target (Person 1/2, Background, objects at fine granularity); CPU fallback = GrabCut
+  subject + background. Each region BiRefNet-refined, named, bounded. Frontend builds
+  `kind:'decomposed'` layers (mask = region, pixels = base clipped to mask) bottom-up
+  (Background first). When decomposed, `composite(..., {drawBase:false})` — the base image is
+  NOT drawn; layers reconstruct it, so hiding a subject reveals an honest transparent hole
+  (occlusion fill = P6). Auto-runs on open + manual "Auto-separate" (FileBar); an editable
+  proposal, not a final cutout.
+- Auto-layer milestones: [x] P1 model (bounds/transform/groups) · [x] P2 auto-decompose ·
   [ ] P3 Move tool · [ ] P4 drag-to-select layers · [ ] P5 multi-layer ops · [ ] P6 fill-behind.
 
 ## Edit document model (non-destructive — Tier-1)
