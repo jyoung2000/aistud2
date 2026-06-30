@@ -28,6 +28,11 @@ export function LayersPanel({
   onEdit,
   onAdjust,
   onReroll,
+  onGroup,
+  onAlign,
+  onDuplicateSel,
+  onDeleteSel,
+  onSelOpacity,
 }: {
   layers: Layer[];
   activeId: string | null;
@@ -35,7 +40,7 @@ export function LayersPanel({
   thumbs: Map<string, string>;
   baseThumb: string | null;
   onSelect: (id: string, additive: boolean, range: boolean) => void;
-  onToggleVisible: (id: string) => void;
+  onToggleVisible: (id: string, alt: boolean) => void;
   onOpacity: (id: string, v: number) => void;
   onBlend: (id: string, m: BlendMode) => void;
   onDelete: (id: string) => void;
@@ -43,7 +48,13 @@ export function LayersPanel({
   onEdit: (id: string) => void;
   onAdjust: (id: string, adjust: AdjustSpec) => void;
   onReroll: (id: string) => void;
+  onGroup: () => void;
+  onAlign: (mode: "left" | "cx" | "right" | "top" | "cy" | "bottom") => void;
+  onDuplicateSel: () => void;
+  onDeleteSel: () => void;
+  onSelOpacity: (v: number) => void;
 }) {
+  const selCount = selectedIds.length;
   // Compositing order is bottom→top in the array; display top-first.
   const ordered = [...layers].reverse();
   return (
@@ -59,9 +70,34 @@ export function LayersPanel({
         flexDirection: "column",
       }}
     >
-      <div style={{ padding: "10px 12px", fontSize: 11, letterSpacing: 1, color: "#64748b", fontWeight: 700 }}>
+      <div style={{ padding: "10px 12px 6px", fontSize: 11, letterSpacing: 1, color: "#64748b", fontWeight: 700 }}>
         LAYERS
       </div>
+
+      {selCount > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "0 8px 8px" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+            <span style={{ fontSize: 10, color: "#e9ecf2" }}>{selCount} selected</span>
+            <button style={opBtn} onClick={onGroup} title="Group selected layers">Group</button>
+            <button style={opBtn} onClick={onDuplicateSel} title="Duplicate">Dup</button>
+            <button style={{ ...opBtn, color: "#e5687a" }} onClick={onDeleteSel} title="Delete">Del</button>
+          </div>
+          {selCount > 1 && (
+            <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+              <span style={{ fontSize: 9, color: "#5c6473" }}>align</span>
+              {(["left", "cx", "right", "top", "cy", "bottom"] as const).map((mode) => (
+                <button key={mode} style={{ ...opBtn, padding: "2px 5px" }} onClick={() => onAlign(mode)} title={`Align ${mode}`}>
+                  {mode === "left" ? "⊣" : mode === "cx" ? "↔" : mode === "right" ? "⊢" : mode === "top" ? "⊤" : mode === "cy" ? "↕" : "⊥"}
+                </button>
+              ))}
+            </div>
+          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 9, color: "#5c6473" }}>opacity</span>
+            <input type="range" min={0} max={1} step={0.01} defaultValue={1} onChange={(e) => onSelOpacity(Number(e.target.value))} style={{ flex: 1, accentColor: "#e9ecf2" }} />
+          </div>
+        </div>
+      )}
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6, padding: "0 8px 8px" }}>
         {ordered.length === 0 && (
@@ -92,9 +128,9 @@ export function LayersPanel({
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    onToggleVisible(L.id);
+                    onToggleVisible(L.id, e.altKey);
                   }}
-                  title={L.visible ? "Hide" : "Show"}
+                  title={L.visible ? "Hide (Alt-click = solo)" : "Show"}
                   style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 13, color: L.visible ? "#cbd5e1" : "#475569" }}
                 >
                   {L.visible ? "👁" : "—"}
@@ -227,6 +263,15 @@ const smallBtn: React.CSSProperties = {
   color: "#cbd5e1",
   borderRadius: 4,
   fontSize: 10.5,
+  padding: "3px 7px",
+  cursor: "pointer",
+};
+const opBtn: React.CSSProperties = {
+  border: "1px solid #2b313c",
+  background: "#1f232b",
+  color: "#cbd5e1",
+  borderRadius: 4,
+  fontSize: 10,
   padding: "3px 7px",
   cursor: "pointer",
 };

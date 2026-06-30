@@ -53,6 +53,7 @@ import {
   type DocTransform,
   type LayerTransform,
   type LayerBounds,
+  type LayerGroup,
   type AdjustSpec,
 } from "./document";
 import { b64ToFile, outpaint, finishImage } from "../api/generate";
@@ -140,6 +141,7 @@ export function CanvasStage() {
   const [baseThumb, setBaseThumb] = useState<string | null>(null);
   const [decomposed, setDecomposed] = useState(false);
   const [decomposing, setDecomposing] = useState(false);
+  const [groups, setGroups] = useState<LayerGroup[]>([]);
   // layer selection (Move tool) — distinct from the pixel mask selection
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>([]);
   const [marquee, setMarquee] = useState<LayerBounds | null>(null);
@@ -304,6 +306,13 @@ export function CanvasStage() {
         setTool("select");
         return;
       }
+      if (tool === "move") {
+        if ((e.key === "Delete" || e.key === "Backspace") && selectedLayerIds.length) {
+          e.preventDefault();
+          deleteSelected();
+        }
+        return;
+      }
       if (tool === "lasso") {
         if (e.key === "Enter" && lassoPts.length > 2) {
           e.preventDefault();
@@ -337,7 +346,7 @@ export function CanvasStage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, lassoPts, lassoMode, pen, penSel, mask]);
+  }, [tool, lassoPts, lassoMode, pen, penSel, mask, selectedLayerIds]);
 
   // undo/redo keyboard (fresh closures via deps; zoom/pan are NOT on the stack)
   useEffect(() => {
@@ -1167,6 +1176,67 @@ export function CanvasStage() {
     }
   };
 
+  // --- multi-layer operations ---
+  const groupSelected = () => {
+    if (selectedLayerIds.length < 1) return;
+    pushHistory();
+    const gid = newLayerId();
+    setGroups((g) => [...g, { id: gid, name: `Group ${g.length + 1}`, collapsed: false, layerIds: [...selectedLayerIds] }]);
+    setLayers((ls) => ls.map((L) => (selectedLayerIds.includes(L.id) ? { ...L, groupId: gid } : L)));
+  };
+  const alignSelected = (mode: "left" | "cx" | "right" | "top" | "cy" | "bottom") => {
+    if (selectedLayerIds.length < 2 || !img) return;
+    const [W, H] = dims();
+    const box = unionBounds(layers.filter((L) => selectedLayerIds.includes(L.id)), W, H);
+    if (!box) return;
+    const [ux, uy, uw, uh] = box;
+    pushHistory();
+    setLayers((ls) =>
+      ls.map((L) => {
+        if (!selectedLayerIds.includes(L.id)) return L;
+        const tb = transformedBounds(L, W, H);
+        const tr = { ...(L.transform ?? IDENTITY_TRANSFORM) };
+        if (mode === "left") tr.tx += ux - tb[0];
+        else if (mode === "cx") tr.tx += ux + uw / 2 - (tb[0] + tb[2] / 2);
+        else if (mode === "right") tr.tx += ux + uw - (tb[0] + tb[2]);
+        else if (mode === "top") tr.ty += uy - tb[1];
+        else if (mode === "cy") tr.ty += uy + uh / 2 - (tb[1] + tb[3] / 2);
+        else if (mode === "bottom") tr.ty += uy + uh - (tb[1] + tb[3]);
+        return { ...L, transform: tr };
+      })
+    );
+    setImgVer((v) => v + 1);
+  };
+  const duplicateSelected = () => {
+    if (!selectedLayerIds.length) return;
+    pushHistory();
+    const sel = layers.filter((L) => selectedLayerIds.includes(L.id));
+    const newIds: string[] = [];
+    const dups = sel.map((L) => {
+      const nid = newLayerId();
+      newIds.push(nid);
+      const src = layerImgs.current.get(L.id);
+      if (src) layerImgs.current.set(nid, src);
+      const tr = { ...(L.transform ?? IDENTITY_TRANSFORM) };
+      return { ...cloneLayer(L), id: nid, name: `${L.name} copy`, transform: { ...tr, tx: tr.tx + 12, ty: tr.ty + 12 } };
+    });
+    setLayers((ls) => [...ls, ...dups]);
+    setSelectedLayerIds(newIds);
+    setImgVer((v) => v + 1);
+  };
+  const deleteSelected = () => {
+    if (!selectedLayerIds.length) return;
+    pushHistory();
+    setLayers((ls) => ls.filter((L) => !selectedLayerIds.includes(L.id)));
+    setSelectedLayerIds([]);
+    setActiveLayer(null);
+    setImgVer((v) => v + 1);
+  };
+  const setSelOpacity = (v: number) => {
+    setLayers((ls) => ls.map((L) => (selectedLayerIds.includes(L.id) ? { ...L, opacity: v } : L)));
+    setImgVer((x) => x + 1);
+  };
+
   // panel ↔ canvas selection sync (click / shift-range / cmd-add)
   const selectLayerRow = (id: string, additive: boolean, range: boolean) => {
     setActiveLayer(id);
@@ -1193,10 +1263,18 @@ export function CanvasStage() {
   // --- layer ops ---
   const updateLayer = (id: string, patch: Partial<DocLayer>) =>
     setLayers((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
-  const toggleVisible = (id: string) => {
+  const toggleVisible = (id: string, alt = false) => {
     pushHistory();
-    const cur = layers.find((l) => l.id === id);
-    updateLayer(id, { visible: !cur?.visible });
+    if (alt) {
+      // solo/isolate — show only this layer; alt-clicking again restores all
+      const onlyThis = layers.every((L) => (L.id === id ? L.visible : !L.visible));
+      setLayers((ls) => ls.map((L) => ({ ...L, visible: onlyThis ? true : L.id === id })));
+      setImgVer((v) => v + 1);
+      return;
+    }
+    const targets = selectedLayerIds.includes(id) && selectedLayerIds.length > 1 ? selectedLayerIds : [id];
+    const cur = layers.find((l) => l.id === id)?.visible ?? true;
+    setLayers((ls) => ls.map((L) => (targets.includes(L.id) ? { ...L, visible: !cur } : L)));
     setImgVer((v) => v + 1);
   };
   const setLayerOpacity = (id: string, v: number) => {
@@ -1266,7 +1344,7 @@ export function CanvasStage() {
   };
   const saveProject = () => {
     if (!img) return;
-    const json = serializeDoc(img.naturalWidth, img.naturalHeight, imgToDataUrl(img), layers, docTransform);
+    const json = serializeDoc(img.naturalWidth, img.naturalHeight, imgToDataUrl(img), layers, docTransform, groups);
     downloadBlob(new Blob([json], { type: "application/json" }), "neuclip-project.neuclip");
   };
   const openProject = async (file: File) => {
@@ -1276,6 +1354,7 @@ export function CanvasStage() {
     setLayers(d.layers);
     layerImgs.current = d.layerImgs;
     setDecomposed(d.layers.some((l) => l.kind === "decomposed"));
+    setGroups(d.groups ?? []);
     setDocTransform(d.transform ?? { straighten: 0 });
     setMask(new MaskBuffer(d.width, d.height));
     setActiveLayer(null);
@@ -1475,6 +1554,11 @@ export function CanvasStage() {
           onEdit={editLayer}
           onAdjust={setLayerAdjust}
           onReroll={reroll}
+          onGroup={groupSelected}
+          onAlign={alignSelected}
+          onDuplicateSel={duplicateSelected}
+          onDeleteSel={deleteSelected}
+          onSelOpacity={setSelOpacity}
         />
       )}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>

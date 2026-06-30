@@ -394,6 +394,7 @@ interface SerDoc {
   height: number;
   base: string; // data URL
   transform?: DocTransform;
+  groups?: LayerGroup[];
   layers: SerLayer[];
 }
 
@@ -439,13 +440,14 @@ export function serializeDoc(
   height: number,
   baseDataUrl: string,
   layers: Layer[],
-  transform?: DocTransform
+  transform?: DocTransform,
+  groups?: LayerGroup[]
 ): string {
   const sl: SerLayer[] = layers.map((L) => {
     const { mask, ...rest } = L;
     return { ...rest, maskPng: mask ? maskToPng(mask, width, height) : undefined };
   });
-  const doc: SerDoc = { version: 1, width, height, base: baseDataUrl, transform, layers: sl };
+  const doc: SerDoc = { version: 1, width, height, base: baseDataUrl, transform, groups, layers: sl };
   return JSON.stringify(doc);
 }
 
@@ -454,6 +456,7 @@ export async function deserializeDoc(json: string): Promise<{
   height: number;
   baseImg: HTMLImageElement;
   transform?: DocTransform;
+  groups: LayerGroup[];
   layers: Layer[];
   layerImgs: Map<string, HTMLImageElement>;
 }> {
@@ -471,5 +474,5 @@ export async function deserializeDoc(json: string): Promise<{
     layers.push(layer);
     if (layer.resultUrl) layerImgs.set(layer.id, await loadImg(layer.resultUrl));
   }
-  return { width: doc.width, height: doc.height, baseImg, transform: doc.transform, layers, layerImgs };
+  return { width: doc.width, height: doc.height, baseImg, transform: doc.transform, groups: doc.groups ?? [], layers, layerImgs };
 }

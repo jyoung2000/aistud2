@@ -194,7 +194,12 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
   row click (Shift=range, Cmd/Ctrl=add) drives the same set (`selectLayerRow`). Helpers in
   `document.ts`: forward/inverse point, transformedBounds, unionBounds, rectsIntersect.
 - Auto-layer milestones: [x] P1 model (bounds/transform/groups) · [x] P2 auto-decompose ·
-  [x] P3 Move tool · [x] P4 drag-to-select layers · [ ] P5 multi-layer ops · [ ] P6 fill-behind.
+  [x] P3 Move tool · [x] P4 drag-to-select layers · [x] P5 multi-layer ops · [ ] P6 fill-behind.
+- P5 multi-layer ops: eye toggle affects all selected (Alt-click eye = solo/isolate); panel
+  multi-select (click / Shift=range / Cmd-Ctrl=add, synced with canvas); Group selected
+  (`Document.groups`, persisted in `.neuclip`); align L/Cx/R/T/Cy/B via transformedBounds;
+  duplicate (offset copy, shares pixels), delete (Del), opacity across selection; the Move
+  tool transforms the whole selection together.
 
 ## Edit document model (non-destructive — Tier-1)
 The editor is a **layer document**, not a flattened image. The base image is NEVER mutated;
