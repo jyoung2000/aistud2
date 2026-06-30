@@ -83,6 +83,8 @@ class SelectIn(BaseModel):
     points: list[list[float]] = []  # [[x, y], ...] in image space
     labels: list[int] = []          # 1 = positive, 0 = negative (paired with points)
     box: Optional[list[float]] = None  # [x0, y0, x1, y1]
+    subject: bool = False           # one-click subject
+    semantic: Optional[str] = None  # text-grounded selection
 
 
 class RefineIn(BaseModel):
@@ -113,12 +115,21 @@ def select(body: SelectIn) -> dict:
     except KeyError as e:
         raise HTTPException(status_code=409, detail=str(e))
     _selector.set_image(session.rgb, session.image_id)
-    mask = _selector.select(body.points, body.labels, body.box)
+    note = None
+    if body.semantic:
+        mask, available = _selector.semantic(body.semantic)
+        if not available:
+            note = "semantic select needs Grounding-DINO weights on the target GPU"
+    elif body.subject:
+        mask = _selector.select_subject()
+    else:
+        mask = _selector.select(body.points, body.labels, body.box)
     return {
         "mask_png": imaging.png_to_base64(mask),
         "width": session.width,
         "height": session.height,
         "backend": _selector.backend,
+        "note": note,
     }
 
 

@@ -49,8 +49,14 @@ import {
 import { b64ToFile } from "../api/generate";
 import { LayersPanel } from "../panels/layersPanel";
 
-type Tool = "select" | "lasso" | "pen" | "hand";
+type Tool = "select" | "lasso" | "pen" | "wand" | "hand";
 type LassoMode = "free" | "poly" | "magnetic";
+
+interface ImgPx {
+  data: Uint8ClampedArray;
+  w: number;
+  h: number;
+}
 
 function downloadBlob(blob: Blob, name: string) {
   const a = document.createElement("a");
@@ -124,6 +130,12 @@ export function CanvasStage() {
   const [activeLayer, setActiveLayer] = useState<string | null>(null);
   const [baseThumb, setBaseThumb] = useState<string | null>(null);
   const [docTransform, setDocTransform] = useState<DocTransform>({ straighten: 0 });
+  const imgPx = useRef<ImgPx | null>(null); // cached base pixels for magic wand
+  const [wandTol, setWandTol] = useState(0.15);
+  const [wandContig, setWandContig] = useState(true);
+  const [semanticText, setSemanticText] = useState("");
+  const [namedSel, setNamedSel] = useState<{ name: string; data: Uint8Array }[]>([]);
+  const [selNote, setSelNote] = useState<string | null>(null);
 
   const composite = useMemo(() => {
     if (!img) return null;
@@ -136,6 +148,15 @@ export function CanvasStage() {
     layers.forEach((L) => L.resultUrl && m.set(L.id, L.resultUrl));
     return m;
   }, [layers]);
+
+  const cacheImgPx = (image: HTMLImageElement) => {
+    const pc = document.createElement("canvas");
+    pc.width = image.naturalWidth;
+    pc.height = image.naturalHeight;
+    const x = pc.getContext("2d")!;
+    x.drawImage(image, 0, 0);
+    imgPx.current = { data: x.getImageData(0, 0, pc.width, pc.height).data, w: pc.width, h: pc.height };
+  };
 
   // gesture refs (avoid re-renders mid-drag)
   const drag = useRef<{ start: Pt; startT: ViewTransform; pan: boolean; moved: boolean; down: Pt } | null>(null);
@@ -315,6 +336,8 @@ export function CanvasStage() {
       tc.height = Math.max(1, Math.round(image.naturalHeight * s));
       tc.getContext("2d")!.drawImage(image, 0, 0, tc.width, tc.height);
       setBaseThumb(tc.toDataURL("image/png"));
+      cacheImgPx(image);
+      setNamedSel([]);
       URL.revokeObjectURL(url);
     };
     image.src = url;
@@ -441,6 +464,10 @@ export function CanvasStage() {
       } else if (!d.moved) {
         void lassoClick(ip, e);
       }
+      return;
+    }
+    if (tool === "wand") {
+      if (!d.moved) magicWand(screenToImage(p, t), opFromModifiers(e.evt.shiftKey, e.evt.altKey));
       return;
     }
     if (tool !== "select") return;
@@ -643,6 +670,94 @@ export function CanvasStage() {
     const next = mask.clone();
     next.invert();
     setMask(next);
+  };
+
+  // --- stronger selection ---
+  const magicWand = (ip: Pt, op: BoolOp) => {
+    const px = imgPx.current;
+    if (!px || !mask) return;
+    const { data, w, h } = px;
+    const sx = Math.min(w - 1, Math.max(0, Math.floor(ip.x)));
+    const sy = Math.min(h - 1, Math.max(0, Math.floor(ip.y)));
+    const i0 = (sy * w + sx) * 4;
+    const r0 = data[i0], g0 = data[i0 + 1], b0 = data[i0 + 2];
+    const tol = wandTol * 441.7; // max color distance
+    const inc = new Uint8Array(w * h);
+    const close = (i: number) =>
+      Math.hypot(data[i * 4] - r0, data[i * 4 + 1] - g0, data[i * 4 + 2] - b0) <= tol;
+    if (wandContig) {
+      const stack = [sy * w + sx];
+      const seen = new Uint8Array(w * h);
+      while (stack.length) {
+        const i = stack.pop()!;
+        if (seen[i] || !close(i)) continue;
+        seen[i] = 1;
+        inc[i] = 255;
+        const x = i % w, y = (i / w) | 0;
+        if (x > 0) stack.push(i - 1);
+        if (x < w - 1) stack.push(i + 1);
+        if (y > 0) stack.push(i - w);
+        if (y < h - 1) stack.push(i + w);
+      }
+    } else {
+      for (let i = 0; i < w * h; i++) if (close(i)) inc[i] = 255;
+    }
+    pushHistory();
+    const next = mask.clone();
+    next.apply(inc, op);
+    setMask(next);
+  };
+
+  const modifySel = (fn: (m: MaskBuffer) => void) => {
+    if (!mask || mask.isEmpty()) return;
+    pushHistory();
+    const next = mask.clone();
+    fn(next);
+    setMask(next);
+  };
+
+  const selectSubject = async () => {
+    if (!imageId || !mask) return;
+    pushHistory();
+    setBusy(true);
+    setSelNote(null);
+    try {
+      const r = await smartSelect(imageId, [], null, { subject: true });
+      setMask(new MaskBuffer(r.width, r.height, r.data));
+    } catch (e) {
+      console.error("select subject failed:", e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectSemantic = async () => {
+    if (!imageId || !mask || !semanticText.trim()) return;
+    pushHistory();
+    setBusy(true);
+    setSelNote(null);
+    try {
+      const r = await smartSelect(imageId, [], null, { semantic: semanticText.trim() });
+      setMask(new MaskBuffer(r.width, r.height, r.data));
+      if (r.note) setSelNote(r.note);
+    } catch (e) {
+      console.error("semantic select failed:", e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveSelection = () => {
+    if (!mask || mask.isEmpty()) return;
+    const name = window.prompt("Name this selection:", `Selection ${namedSel.length + 1}`);
+    if (!name) return;
+    setNamedSel((s) => [...s, { name, data: new Uint8Array(mask.data) }]);
+  };
+  const loadSelection = (idx: number) => {
+    const s = namedSel[idx];
+    if (!s || !mask) return;
+    pushHistory();
+    setMask(new MaskBuffer(mask.width, mask.height, new Uint8Array(s.data)));
   };
 
   // --- history (undo/redo) — selection commits + edits only; zoom/pan stay off the stack ---
@@ -893,6 +1008,7 @@ export function CanvasStage() {
     tc.height = Math.max(1, Math.round(d.height * s));
     tc.getContext("2d")!.drawImage(d.baseImg, 0, 0, tc.width, tc.height);
     setBaseThumb(tc.toDataURL("image/png"));
+    cacheImgPx(d.baseImg);
     // re-upload base so selection works on the restored project
     try {
       const r = await loadImageToSidecar(await b64ToFile(imgToDataUrl(d.baseImg)));
@@ -1075,6 +1191,28 @@ export function CanvasStage() {
         onFit={() => img && setT(fitTransform(img.naturalWidth, img.naturalHeight, vp.w, vp.h))}
         onActual={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1 / c.scale))}
       />
+      {img && (
+        <SelectBar
+          tool={tool}
+          onWandTool={() => setTool("wand")}
+          busy={busy}
+          onSubject={selectSubject}
+          wandTol={wandTol}
+          onWandTol={setWandTol}
+          wandContig={wandContig}
+          onWandContig={setWandContig}
+          onGrow={() => modifySel((m) => m.grow(3))}
+          onShrink={() => modifySel((m) => m.shrink(3))}
+          onSmooth={() => modifySel((m) => m.smooth())}
+          semanticText={semanticText}
+          onSemanticText={setSemanticText}
+          onSemantic={selectSemantic}
+          onSaveSel={saveSelection}
+          named={namedSel.map((s) => s.name)}
+          onLoadSel={loadSelection}
+          note={selNote}
+        />
+      )}
       <div ref={wrapRef} style={{ flex: 1, position: "relative", background: "#0a0c0f", minHeight: 0 }}>
         {!img && (
           <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", color: "#3f4753" }}>
@@ -1513,6 +1651,118 @@ function FileBar({
         style={{ width: 90, accentColor: "#22d3ee" }}
       />
       <span style={{ width: 36 }}>{straighten.toFixed(1)}°</span>
+    </div>
+  );
+}
+
+function SelectBar({
+  tool,
+  onWandTool,
+  busy,
+  onSubject,
+  wandTol,
+  onWandTol,
+  wandContig,
+  onWandContig,
+  onGrow,
+  onShrink,
+  onSmooth,
+  semanticText,
+  onSemanticText,
+  onSemantic,
+  onSaveSel,
+  named,
+  onLoadSel,
+  note,
+}: {
+  tool: Tool;
+  onWandTool: () => void;
+  busy: boolean;
+  onSubject: () => void;
+  wandTol: number;
+  onWandTol: (v: number) => void;
+  wandContig: boolean;
+  onWandContig: (v: boolean) => void;
+  onGrow: () => void;
+  onShrink: () => void;
+  onSmooth: () => void;
+  semanticText: string;
+  onSemanticText: (v: string) => void;
+  onSemantic: () => void;
+  onSaveSel: () => void;
+  named: string[];
+  onLoadSel: (idx: number) => void;
+  note: string | null;
+}) {
+  const C = COLOR_SELECTION;
+  const btn: React.CSSProperties = {
+    background: "#141a1c",
+    color: "#a9c7cc",
+    border: "1px solid #233037",
+    borderRadius: 5,
+    padding: "3px 8px",
+    fontSize: 11,
+    cursor: "pointer",
+  };
+  return (
+    <div
+      style={{
+        minHeight: 30,
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "center",
+        gap: 7,
+        padding: "4px 10px",
+        borderBottom: "1px solid #1a2226",
+        background: "#0c1113",
+        font: "11px ui-monospace, monospace",
+        color: "#7da3ab",
+      }}
+    >
+      <button style={btn} disabled={busy} onClick={onSubject} title="Select subject (one click)">
+        ⊙ Subject
+      </button>
+      <button
+        style={{ ...btn, borderColor: tool === "wand" ? C : "#233037", color: tool === "wand" ? C : "#a9c7cc" }}
+        onClick={onWandTool}
+        title="Magic wand — click to flood-select by color"
+      >
+        ✦ Wand
+      </button>
+      <span>tol</span>
+      <input type="range" min={0.01} max={0.6} step={0.01} value={wandTol} onChange={(e) => onWandTol(Number(e.target.value))} style={{ width: 70, accentColor: C }} />
+      <label style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer" }}>
+        <input type="checkbox" checked={wandContig} onChange={(e) => onWandContig(e.target.checked)} style={{ accentColor: C }} />
+        contiguous
+      </label>
+      <span style={{ width: 1, height: 16, background: "#233037" }} />
+      <button style={btn} onClick={onGrow} title="Grow selection 3px">Grow</button>
+      <button style={btn} onClick={onShrink} title="Shrink selection 3px">Shrink</button>
+      <button style={btn} onClick={onSmooth} title="Smooth selection edges">Smooth</button>
+      <span style={{ width: 1, height: 16, background: "#233037" }} />
+      <input
+        value={semanticText}
+        onChange={(e) => onSemanticText(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && onSemantic()}
+        placeholder="select by text (e.g. all people)"
+        style={{ width: 170, background: "#0d0f12", color: "#e2e8f0", border: "1px solid #233037", borderRadius: 5, padding: "3px 6px", fontSize: 11 }}
+      />
+      <button style={btn} disabled={busy} onClick={onSemantic}>Find</button>
+      <span style={{ width: 1, height: 16, background: "#233037" }} />
+      <button style={btn} onClick={onSaveSel} title="Save current selection">Save sel</button>
+      {named.length > 0 && (
+        <select
+          defaultValue=""
+          onChange={(e) => e.target.value !== "" && onLoadSel(Number(e.target.value))}
+          style={{ ...btn, padding: "2px 4px" }}
+        >
+          <option value="">load…</option>
+          {named.map((n, i) => (
+            <option key={i} value={i}>{n}</option>
+          ))}
+        </select>
+      )}
+      {note && <span style={{ color: "#eab308", fontSize: 10.5 }}>{note}</span>}
     </div>
   );
 }

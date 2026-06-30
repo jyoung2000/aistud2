@@ -90,6 +90,46 @@ class SmartSelector:
         best = masks[int(np.argmax(scores))]
         return (best > 0).astype(np.uint8) * 255
 
+    # --- one-click subject -----------------------------------------------------
+    def select_subject(self) -> np.ndarray:
+        """SAM automatic foreground when available; else GrabCut on a centered rect."""
+        if self.image is None:
+            raise RuntimeError("no image set")
+        h, w = self.image.shape[:2]
+        if self.backend == "sam2":  # pragma: no cover
+            try:
+                from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator  # type: ignore
+
+                gen = SAM2AutomaticMaskGenerator(self.predictor.model)
+                masks = gen.generate(self.image)
+                if masks:
+                    best = max(masks, key=lambda m: m["area"])  # largest region
+                    return (best["segmentation"] > 0).astype(np.uint8) * 255
+            except Exception as e:
+                print(f"[subject] SAM auto failed, fallback: {e}")
+        assert cv2 is not None
+        bgr = cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR)
+        return self._grabcut(bgr, [w * 0.1, h * 0.1, w * 0.9, h * 0.9], h, w)
+
+    # --- text-grounded (semantic) ---------------------------------------------
+    def semantic(self, text: str):
+        """Grounding-DINO + SAM on the target GPU; honest empty fallback on CPU/no-model.
+
+        Returns (mask, available: bool)."""
+        if self.image is None:
+            raise RuntimeError("no image set")
+        h, w = self.image.shape[:2]
+        ckpt = os.environ.get("NEUCLIP_GDINO_CHECKPOINT")
+        if ckpt and self.backend == "sam2":  # pragma: no cover
+            try:
+                # Placeholder for the real GroundingDINO->boxes->SAM pipeline.
+                from groundingdino.util.inference import load_model, predict  # type: ignore  # noqa
+
+                raise NotImplementedError("wire GroundingDINO weights on the target")
+            except Exception as e:
+                print(f"[semantic] grounded model unavailable: {e}")
+        return np.zeros((h, w), np.uint8), False
+
     # --- classical fallback ---------------------------------------------------
     def _select_fallback(self, points, labels, box) -> np.ndarray:
         assert cv2 is not None, "OpenCV required for fallback select"

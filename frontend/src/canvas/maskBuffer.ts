@@ -16,6 +16,37 @@ export function opFromModifiers(shift: boolean, alt: boolean): BoolOp {
   return "replace";
 }
 
+/** Separable box max-filter (window 2r+1) — dilation. */
+function boxMax(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  const tmp = new Uint8Array(w * h);
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let m = 0;
+      for (let k = -r; k <= r; k++) {
+        const xx = x + k;
+        if (xx >= 0 && xx < w && src[row + xx] > m) m = src[row + xx];
+      }
+      tmp[row + x] = m;
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      let m = 0;
+      for (let k = -r; k <= r; k++) {
+        const yy = y + k;
+        if (yy >= 0 && yy < h) {
+          const v = tmp[yy * w + x];
+          if (v > m) m = v;
+        }
+      }
+      out[y * w + x] = m;
+    }
+  }
+  return out;
+}
+
 export class MaskBuffer {
   readonly width: number;
   readonly height: number;
@@ -80,6 +111,25 @@ export class MaskBuffer {
   invert(): void {
     const d = this.data;
     for (let i = 0; i < d.length; i++) d[i] = d[i] ? 0 : 255;
+  }
+
+  /** Dilate (grow) by r px (separable box). */
+  grow(r: number): void {
+    if (r > 0) this.data = boxMax(this.data, this.width, this.height, r);
+  }
+  /** Erode (shrink) by r px. */
+  shrink(r: number): void {
+    if (r <= 0) return;
+    const inv = new Uint8Array(this.data.length);
+    for (let i = 0; i < inv.length; i++) inv[i] = this.data[i] ? 0 : 255;
+    const d = boxMax(inv, this.width, this.height, r);
+    for (let i = 0; i < d.length; i++) this.data[i] = d[i] ? 0 : 255;
+  }
+  /** Smooth jagged edges (morphological close then open at r=1). */
+  smooth(): void {
+    this.grow(1);
+    this.shrink(2);
+    this.grow(1);
   }
 
   area(): number {

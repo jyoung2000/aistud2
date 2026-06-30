@@ -33,8 +33,9 @@ interface MaskResponse {
 export async function smartSelect(
   id: string,
   points: SamPoint[],
-  box: [number, number, number, number] | null
-): Promise<{ data: Uint8Array; width: number; height: number; backend: string }> {
+  box: [number, number, number, number] | null,
+  opts: { subject?: boolean; semantic?: string } = {}
+): Promise<{ data: Uint8Array; width: number; height: number; backend: string; note?: string }> {
   const res = await fetch(`${await baseUrl()}/select`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -43,12 +44,14 @@ export async function smartSelect(
       points: points.map((p) => [p.x, p.y]),
       labels: points.map((p) => p.label),
       box,
+      subject: opts.subject ?? false,
+      semantic: opts.semantic ?? null,
     }),
   });
   if (!res.ok) throw new Error(`/select ${res.status}`);
-  const j = (await res.json()) as MaskResponse;
+  const j = (await res.json()) as MaskResponse & { note?: string };
   const data = await pngToMask(j.mask_png, j.width, j.height);
-  return { data, width: j.width, height: j.height, backend: j.backend };
+  return { data, width: j.width, height: j.height, backend: j.backend, note: j.note };
 }
 
 export async function refineMask(
