@@ -185,8 +185,16 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
   NOT drawn; layers reconstruct it, so hiding a subject reveals an honest transparent hole
   (occlusion fill = P6). Auto-runs on open + manual "Auto-separate" (FileBar); an editable
   proposal, not a final cutout.
+- **Move tool** (`V`, `canvasStage`): click selects the topmost visible layer whose
+  (transformed) mask is hit (`pointHitsLayer`), Shift-click toggles; drag translates all
+  selected (`transform.tx/ty`), corner handles scale; selection shown as a **solid white box +
+  square handles** (NEVER cyan ants). **Marquee** from empty space selects layers whose
+  `transformedBounds` intersect (`rectsIntersect`; hidden/locked/adjustment excluded;
+  Shift+drag adds). `selectedLayerIds` is the shared state — panel rows highlight white and a
+  row click (Shift=range, Cmd/Ctrl=add) drives the same set (`selectLayerRow`). Helpers in
+  `document.ts`: forward/inverse point, transformedBounds, unionBounds, rectsIntersect.
 - Auto-layer milestones: [x] P1 model (bounds/transform/groups) · [x] P2 auto-decompose ·
-  [ ] P3 Move tool · [ ] P4 drag-to-select layers · [ ] P5 multi-layer ops · [ ] P6 fill-behind.
+  [x] P3 Move tool · [x] P4 drag-to-select layers · [ ] P5 multi-layer ops · [ ] P6 fill-behind.
 
 ## Edit document model (non-destructive — Tier-1)
 The editor is a **layer document**, not a flattened image. The base image is NEVER mutated;

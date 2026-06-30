@@ -16,6 +16,7 @@ const BLENDS: BlendMode[] = [
 export function LayersPanel({
   layers,
   activeId,
+  selectedIds = [],
   thumbs,
   baseThumb,
   onSelect,
@@ -30,9 +31,10 @@ export function LayersPanel({
 }: {
   layers: Layer[];
   activeId: string | null;
+  selectedIds?: string[];
   thumbs: Map<string, string>;
   baseThumb: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, additive: boolean, range: boolean) => void;
   onToggleVisible: (id: string) => void;
   onOpacity: (id: string, v: number) => void;
   onBlend: (id: string, m: BlendMode) => void;
@@ -70,14 +72,15 @@ export function LayersPanel({
         {ordered.map((L, ri) => {
           const idx = layers.length - 1 - ri; // position in the array
           const active = L.id === activeId;
+          const selected = selectedIds.includes(L.id);
           return (
             <div
               key={L.id}
-              onClick={() => onSelect(L.id)}
+              onClick={(e) => onSelect(L.id, e.metaKey || e.ctrlKey, e.shiftKey)}
               style={{
-                border: `1px solid ${active ? "#f59e0b" : "#232830"}`,
+                border: `1px solid ${selected ? "#e9ecf2" : active ? "#f59e0b" : "#232830"}`,
                 borderRadius: 7,
-                background: active ? "#1a160e" : "#14171c",
+                background: selected || active ? "#1a160e" : "#14171c",
                 padding: 8,
                 display: "flex",
                 flexDirection: "column",

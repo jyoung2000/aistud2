@@ -44,15 +44,21 @@ import {
   deserializeDoc,
   boundsFromMask,
   IDENTITY_TRANSFORM,
+  pointHitsLayer,
+  transformedBounds,
+  unionBounds,
+  rectsIntersect,
   type BlendMode,
   type Layer as DocLayer,
   type DocTransform,
+  type LayerTransform,
+  type LayerBounds,
   type AdjustSpec,
 } from "./document";
 import { b64ToFile, outpaint, finishImage } from "../api/generate";
 import { LayersPanel } from "../panels/layersPanel";
 
-type Tool = "select" | "lasso" | "pen" | "wand" | "hand";
+type Tool = "select" | "lasso" | "pen" | "wand" | "move" | "hand";
 type LassoMode = "free" | "poly" | "magnetic";
 
 interface ImgPx {
@@ -134,6 +140,17 @@ export function CanvasStage() {
   const [baseThumb, setBaseThumb] = useState<string | null>(null);
   const [decomposed, setDecomposed] = useState(false);
   const [decomposing, setDecomposing] = useState(false);
+  // layer selection (Move tool) — distinct from the pixel mask selection
+  const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>([]);
+  const [marquee, setMarquee] = useState<LayerBounds | null>(null);
+  const moveDrag = useRef<{
+    mode: "translate" | "scale" | "marquee";
+    start: Pt;
+    startT: Map<string, LayerTransform>;
+    center?: Pt;
+    startDist?: number;
+    shift?: boolean;
+  } | null>(null);
   const [docTransform, setDocTransform] = useState<DocTransform>({ straighten: 0 });
   const imgPx = useRef<ImgPx | null>(null); // cached base pixels for magic wand
   const [wandTol, setWandTol] = useState(0.15);
@@ -277,6 +294,14 @@ export function CanvasStage() {
         setTool("lasso");
         setLassoMode((m) => (m === "free" ? "poly" : m === "poly" ? "magnetic" : "free"));
         cancelLasso();
+        return;
+      }
+      if (!e.metaKey && !e.ctrlKey && (e.key === "v" || e.key === "V")) {
+        setTool("move");
+        return;
+      }
+      if (!e.metaKey && !e.ctrlKey && (e.key === "m" || e.key === "M")) {
+        setTool("select");
         return;
       }
       if (tool === "lasso") {
@@ -457,6 +482,8 @@ export function CanvasStage() {
       setLassoPts([ip]);
     } else if (tool === "pen") {
       penDown(screenToImage(p, t), e);
+    } else if (tool === "move") {
+      moveDown(screenToImage(p, t), e);
     }
   };
 
@@ -472,6 +499,10 @@ export function CanvasStage() {
     }
     const ip = p ? screenToImage(p, t) : null;
     setCursor(ip);
+    if (tool === "move" && ip && moveDrag.current) {
+      moveMove(ip);
+      return;
+    }
     if (tool === "pen" && ip && penDrag.current) {
       penMove(ip);
       return;
@@ -493,6 +524,10 @@ export function CanvasStage() {
     setPanning(false);
     if (tool === "pen") {
       penDrag.current = null;
+      return;
+    }
+    if (tool === "move") {
+      moveEnd(p ? screenToImage(p, t) : null);
       return;
     }
     if (!d || d.pan || !p || !mask || !img) return;
@@ -1012,6 +1047,149 @@ export function CanvasStage() {
     setSamPoints([]);
   };
 
+  // --- Move tool: layer selection + transform (distinct from pixel selection) ---
+  const dims = (): [number, number] => [img?.naturalWidth ?? 0, img?.naturalHeight ?? 0];
+  const layerAt = (ip: Pt): string | null => {
+    const [W, H] = dims();
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const L = layers[i];
+      if (L.locked || !L.visible || L.kind === "adjustment") continue;
+      if (pointHitsLayer(ip, L, W, H)) return L.id;
+    }
+    return null;
+  };
+  const selectionBox = (): LayerBounds | null => {
+    const [W, H] = dims();
+    return unionBounds(layers.filter((L) => selectedLayerIds.includes(L.id)), W, H);
+  };
+  const handleCorners = (box: LayerBounds): Pt[] => {
+    const [x, y, w, h] = box;
+    return [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }];
+  };
+  const hitHandle = (ip: Pt): number => {
+    const box = selectionBox();
+    if (!box) return -1;
+    const r = 9 / t.scale;
+    return handleCorners(box).findIndex((c) => Math.hypot(ip.x - c.x, ip.y - c.y) < r);
+  };
+  const transformsOf = (ids: string[]): Map<string, LayerTransform> => {
+    const m = new Map<string, LayerTransform>();
+    layers.forEach((L) => ids.includes(L.id) && m.set(L.id, { ...(L.transform ?? IDENTITY_TRANSFORM) }));
+    return m;
+  };
+
+  const moveDown = (ip: Pt, e: any) => {
+    if (hitHandle(ip) >= 0 && selectedLayerIds.length) {
+      pushHistory();
+      const box = selectionBox()!;
+      const c = { x: box[0] + box[2] / 2, y: box[1] + box[3] / 2 };
+      moveDrag.current = {
+        mode: "scale",
+        start: ip,
+        startT: transformsOf(selectedLayerIds),
+        center: c,
+        startDist: Math.hypot(ip.x - c.x, ip.y - c.y) || 1,
+      };
+      return;
+    }
+    const lid = layerAt(ip);
+    if (lid) {
+      const sel = e.evt.shiftKey
+        ? selectedLayerIds.includes(lid)
+          ? selectedLayerIds.filter((x) => x !== lid)
+          : [...selectedLayerIds, lid]
+        : selectedLayerIds.includes(lid)
+        ? selectedLayerIds
+        : [lid];
+      setSelectedLayerIds(sel);
+      setActiveLayer(lid);
+      pushHistory();
+      moveDrag.current = { mode: "translate", start: ip, startT: transformsOf(sel) };
+    } else {
+      moveDrag.current = { mode: "marquee", start: ip, startT: new Map(), shift: e.evt.shiftKey };
+      setMarquee([ip.x, ip.y, 0, 0]);
+    }
+  };
+
+  const moveMove = (ip: Pt) => {
+    const md = moveDrag.current;
+    if (!md) return;
+    if (md.mode === "translate") {
+      const dx = ip.x - md.start.x;
+      const dy = ip.y - md.start.y;
+      setLayers((ls) =>
+        ls.map((L) => {
+          const s = md.startT.get(L.id);
+          return s ? { ...L, transform: { ...s, tx: s.tx + dx, ty: s.ty + dy } } : L;
+        })
+      );
+      setImgVer((v) => v + 1);
+    } else if (md.mode === "scale") {
+      const f = Math.hypot(ip.x - md.center!.x, ip.y - md.center!.y) / md.startDist!;
+      setLayers((ls) =>
+        ls.map((L) => {
+          const s = md.startT.get(L.id);
+          return s ? { ...L, transform: { ...s, scale: Math.max(0.05, s.scale * f) } } : L;
+        })
+      );
+      setImgVer((v) => v + 1);
+    } else {
+      setMarquee([
+        Math.min(md.start.x, ip.x),
+        Math.min(md.start.y, ip.y),
+        Math.abs(ip.x - md.start.x),
+        Math.abs(ip.y - md.start.y),
+      ]);
+    }
+  };
+
+  const moveEnd = (ip: Pt | null) => {
+    const md = moveDrag.current;
+    moveDrag.current = null;
+    setMarquee(null);
+    if (md?.mode === "marquee" && ip) {
+      const [W, H] = dims();
+      const rect: LayerBounds = [
+        Math.min(md.start.x, ip.x),
+        Math.min(md.start.y, ip.y),
+        Math.abs(ip.x - md.start.x),
+        Math.abs(ip.y - md.start.y),
+      ];
+      if (rect[2] > 2 || rect[3] > 2) {
+        const sel = layers
+          .filter((L) => L.visible && !L.locked && L.kind !== "adjustment" && rectsIntersect(transformedBounds(L, W, H), rect, false))
+          .map((L) => L.id);
+        setSelectedLayerIds(md.shift ? Array.from(new Set([...selectedLayerIds, ...sel])) : sel);
+        if (sel.length) setActiveLayer(sel[sel.length - 1]);
+      } else if (!md.shift) {
+        setSelectedLayerIds([]); // empty click deselects
+      }
+    }
+  };
+
+  // panel ↔ canvas selection sync (click / shift-range / cmd-add)
+  const selectLayerRow = (id: string, additive: boolean, range: boolean) => {
+    setActiveLayer(id);
+    setTool("move");
+    if (range && activeLayer) {
+      const ids = layers.map((l) => l.id);
+      const a = ids.indexOf(activeLayer);
+      const b = ids.indexOf(id);
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        setSelectedLayerIds(Array.from(new Set([...selectedLayerIds, ...ids.slice(lo, hi + 1)])));
+        return;
+      }
+    }
+    if (additive) {
+      setSelectedLayerIds(
+        selectedLayerIds.includes(id) ? selectedLayerIds.filter((x) => x !== id) : [...selectedLayerIds, id]
+      );
+      return;
+    }
+    setSelectedLayerIds([id]);
+  };
+
   // --- layer ops ---
   const updateLayer = (id: string, patch: Partial<DocLayer>) =>
     setLayers((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
@@ -1285,9 +1463,10 @@ export function CanvasStage() {
         <LayersPanel
           layers={layers}
           activeId={activeLayer}
+          selectedIds={selectedLayerIds}
           thumbs={thumbs}
           baseThumb={baseThumb}
-          onSelect={setActiveLayer}
+          onSelect={(id, additive, range) => selectLayerRow(id, additive, range)}
           onToggleVisible={toggleVisible}
           onOpacity={setLayerOpacity}
           onBlend={setLayerBlend}
@@ -1423,6 +1602,34 @@ export function CanvasStage() {
               img && composite && <KImage image={composite} x={0} y={0} />
             )}
             {viewMode === "diff" && diff && <KImage image={diff.canvas} x={0} y={0} listening={false} />}
+            {tool === "move" && marquee && (
+              <Rect
+                x={marquee[0]}
+                y={marquee[1]}
+                width={marquee[2]}
+                height={marquee[3]}
+                stroke="#cbd5e1"
+                strokeWidth={1 / t.scale}
+                dash={[3 / t.scale, 3 / t.scale]}
+                fill="#cbd5e122"
+                listening={false}
+              />
+            )}
+            {tool === "move" && img && (() => {
+              const box = unionBounds(layers.filter((L) => selectedLayerIds.includes(L.id)), img.naturalWidth, img.naturalHeight);
+              if (!box) return null;
+              const [x, y, w, h] = box;
+              const hs = 5 / t.scale;
+              const corners = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+              return (
+                <>
+                  <Rect x={x} y={y} width={w} height={h} stroke="#e9ecf2" strokeWidth={1.5 / t.scale} listening={false} />
+                  {corners.map(([cx, cy], i) => (
+                    <Rect key={i} x={cx - hs} y={cy - hs} width={hs * 2} height={hs * 2} fill="#e9ecf2" stroke="#121419" strokeWidth={1 / t.scale} listening={false} />
+                  ))}
+                </>
+              );
+            })()}
             {viewMode === "normal" && maskCanvas && <KImage image={maskCanvas} x={0} y={0} listening={false} />}
             {loops.map((loop, i) => (
               <Line
@@ -2101,7 +2308,10 @@ function ZoomBar({
         Open image
       </button>
       <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
-      <button style={toolBtn(tool === "select")} onClick={() => onTool("select")} title="Select (V)">
+      <button style={toolBtn(tool === "move")} onClick={() => onTool("move")} title="Move / select layers (V)">
+        ✥ Move
+      </button>
+      <button style={toolBtn(tool === "select")} onClick={() => onTool("select")} title="Smart select (M)">
         ⬚ Select
       </button>
       <button

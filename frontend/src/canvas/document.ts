@@ -136,6 +136,92 @@ function hasTransform(t?: LayerTransform): t is LayerTransform {
   return !!t && (t.tx !== 0 || t.ty !== 0 || t.scale !== 1 || t.rotation !== 0);
 }
 
+interface Pt2 {
+  x: number;
+  y: number;
+}
+
+function center(layer: Layer, w: number, h: number): Pt2 {
+  const [bx, by, bw, bh] = layerBounds(layer, w, h);
+  return { x: bx + bw / 2, y: by + bh / 2 };
+}
+
+/** Forward map a layer-space point through the layer transform → image space. */
+export function forwardPoint(p: Pt2, layer: Layer, w: number, h: number): Pt2 {
+  const t = layer.transform ?? IDENTITY_TRANSFORM;
+  const c = center(layer, w, h);
+  let x = (p.x - c.x) * t.scale;
+  let y = (p.y - c.y) * t.scale;
+  const cos = Math.cos(t.rotation);
+  const sin = Math.sin(t.rotation);
+  return { x: x * cos - y * sin + c.x + t.tx, y: x * sin + y * cos + c.y + t.ty };
+}
+
+/** Inverse map an image-space point back into the layer's untransformed space. */
+export function inversePoint(q: Pt2, layer: Layer, w: number, h: number): Pt2 {
+  const t = layer.transform ?? IDENTITY_TRANSFORM;
+  const c = center(layer, w, h);
+  let x = q.x - (c.x + t.tx);
+  let y = q.y - (c.y + t.ty);
+  const cos = Math.cos(-t.rotation);
+  const sin = Math.sin(-t.rotation);
+  const rx = (x * cos - y * sin) / t.scale;
+  const ry = (x * sin + y * cos) / t.scale;
+  return { x: rx + c.x, y: ry + c.y };
+}
+
+/** True if an image-space point lands on the layer's (transformed) non-zero mask. */
+export function pointHitsLayer(q: Pt2, layer: Layer, w: number, h: number): boolean {
+  if (!layer.visible) return false;
+  const p = inversePoint(q, layer, w, h);
+  const x = Math.floor(p.x);
+  const y = Math.floor(p.y);
+  if (x < 0 || y < 0 || x >= w || y >= h) return false;
+  if (!layer.mask) return true; // whole-doc layer
+  return layer.mask[y * w + x] !== 0;
+}
+
+/** Axis-aligned bbox [x,y,w,h] of the layer's transformed bounds. */
+export function transformedBounds(layer: Layer, w: number, h: number): LayerBounds {
+  const [bx, by, bw, bh] = layerBounds(layer, w, h);
+  const corners: Pt2[] = [
+    { x: bx, y: by },
+    { x: bx + bw, y: by },
+    { x: bx + bw, y: by + bh },
+    { x: bx, y: by + bh },
+  ].map((p) => forwardPoint(p, layer, w, h));
+  const xs = corners.map((p) => p.x);
+  const ys = corners.map((p) => p.y);
+  const x0 = Math.min(...xs);
+  const y0 = Math.min(...ys);
+  return [x0, y0, Math.max(...xs) - x0, Math.max(...ys) - y0];
+}
+
+/** Union bbox of several layers' transformed bounds. */
+export function unionBounds(layers: Layer[], w: number, h: number): LayerBounds | null {
+  if (!layers.length) return null;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const L of layers) {
+    const [x, y, bw, bh] = transformedBounds(L, w, h);
+    x0 = Math.min(x0, x);
+    y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x + bw);
+    y1 = Math.max(y1, y + bh);
+  }
+  return [x0, y0, x1 - x0, y1 - y0];
+}
+
+/** Rect intersection test for marquee layer-selection. */
+export function rectsIntersect(a: LayerBounds, b: LayerBounds, contained = false): boolean {
+  const [ax, ay, aw, ah] = a;
+  const [bx, by, bw, bh] = b;
+  if (contained) {
+    // a fully inside b
+    return ax >= bx && ay >= by && ax + aw <= bx + bw && ay + ah <= by + bh;
+  }
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
 let _idc = 0;
 export function newLayerId(): string {
   // monotonic — Math.random is unavailable in some contexts; a counter is deterministic.
