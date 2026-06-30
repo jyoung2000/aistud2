@@ -49,6 +49,38 @@ Frontend: `frontend/src/constants.ts`. Sidecar: `sidecar/app/constants.py`.
    read `data.outputs[0]`. Confirmed slug: `wavespeed-ai/qwen-image/edit-2511`.
 7. **Imported prompt profiles are untrusted data** (see Phase 8 safety).
 
+## Reference roles (Edit pipeline — replace / pose / style)
+A reference image has a **role**, and each role wires up differently. Adding a future role
+must be just another table entry.
+- **replace** — place the reference's subject into the selection (character/object swap).
+  No preprocess; raw reference is the subject source. Crop = tight selection bbox + pad.
+- **pose** — keep the original subject's identity, change only pose to match the reference
+  (ControlNet-style). Preprocess = DWpose/OpenPose skeleton (the control image). Crop MUST
+  expand to the subject's **full extent** (full-body bbox) — a tight crop breaks pose.
+- **style** *(bonus)* — adopt the reference's look/palette, keep original content. No
+  structural preprocess. Crop = region as selected.
+- Registry per model (pulled from its card, contract #6): `reference_roles: [...]` and
+  `reference_inputs: { pose: "controlnet"|"multi_image", ... }` (how the ref is attached).
+  Replaces the old boolean `needs_reference_image`. Role toggle offers only supported
+  roles; picking an unsupported role surfaces a "switch to {model}" suggestion (no silent
+  fail). Confirmed-capable: Qwen-Image-Edit-Plus (replace+pose), Ideogram Character
+  (replace), Z-Image-Turbo ControlNet (pose).
+- `.nprofile` gains `reference_roles`, `reference_inputs`, per-role templates + default
+  strengths (untrusted-data rules apply; machine-introspected caps win over imports).
+- UI is **amber** (AI-side). Frontend: `panels/referenceBlock.tsx` (controlled component,
+  role-agnostic `ReferenceState`), hosted by `panels/inspectorPipeline.tsx`. Stub model
+  caps in `api/referenceModels.ts` until the real registry lands (Phase 7 / M2).
+- Reference-feature milestones: [x] M1 UI (stubbed) · [ ] M2 routing · [ ] M3 replace
+  e2e · [ ] M4 pose preprocess+transfer · [ ] M5 profiles+style. (Builds on Phases 6–8.)
+
+## Launching / packaging
+- **Consumer install (endgame):** `tauri build` → Windows `.msi`/NSIS `.exe`, macOS
+  `.dmg`/`.app` (double-click, no terminal). Built per-OS in CI (`.github/workflows/
+  release.yml`) since cross-building isn't possible from the Linux dev container.
+- **Bridge launchers (`launchers/`):** double-clickable `Start Neuclip Studio.command`
+  (macOS) and `.bat` (Windows) that auto-install toolchains (Homebrew / winget) + deps and
+  open the dev GUI — for use before a tagged release exists.
+
 ## Sidecar API surface (target)
 `/health` `/load` `/select` `/refine` `/livewire/costmap` `/generate` `/poll`
 
