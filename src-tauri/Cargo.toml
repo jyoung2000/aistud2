@@ -1,0 +1,23 @@
+[package]
+name = "neuclip-studio"
+version = "0.0.0"
+description = "Neuclip Studio — AI-assisted image editor"
+authors = ["Neuclip Studio"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "neuclip_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

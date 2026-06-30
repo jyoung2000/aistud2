@@ -1,0 +1,30 @@
+# secrets
+.env
+
+# python
+sidecar/.venv/
+__pycache__/
+*.pyc
+sidecar/build/
+sidecar/dist/
+*.spec
+
+# node
+frontend/node_modules/
+frontend/dist/
+
+# rust / tauri
+src-tauri/target/
+src-tauri/gen/
+# frozen sidecar binaries are build artifacts
+src-tauri/binaries/
+
+# models / weights (downloaded on the target machine)
+sidecar/app/weights/
+*.pt
+*.pth
+*.safetensors
+
+# os
+.DS_Store
+Thumbs.db

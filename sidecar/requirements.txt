@@ -1,0 +1,26 @@
+# Neuclip Studio sidecar deps.
+#
+# CUDA PyTorch is NOT pinned here because the correct wheel depends on the installed
+# CUDA toolkit. On the RTX 4070 target install it explicitly, e.g.:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# then verify:  python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+#
+# Phase 0 only needs the web stack; ML libs are added in later phases.
+
+# --- web / sidecar (Phase 0) ---
+fastapi>=0.115,<0.117
+uvicorn[standard]>=0.30,<0.35
+pydantic>=2.7,<3
+httpx>=0.27,<0.29
+python-dotenv>=1.0,<2
+pillow>=10.3
+numpy>=1.26,<3
+
+# --- ML (added/uncommented as phases land) ---
+# torch, torchvision            # install per-CUDA, see note above (Phase 0 verify, Phase 3 SAM)
+# opencv-python-headless>=4.9   # live-wire cost map (Phase 4), compositing (Phase 6)
+# scipy>=1.11                   # gradients / zero-crossings (Phase 4)
+# sam2                          # SAM 2 (Phase 3) — from facebookresearch/sam2
+# birefnet / transformers       # edge matting (Phase 3)
+# pyyaml>=6                     # .nprofile parsing (Phase 8)
+# jsonschema>=4                 # .nprofile validation (Phase 8)
