@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Stage, Layer, Image as KImage, Line } from "react-konva";
+import { Stage, Layer, Image as KImage, Line, Circle } from "react-konva";
 import { COLOR_SELECTION } from "../constants";
 import {
   fitTransform,
@@ -8,7 +8,13 @@ import {
   type Pt,
   type ViewTransform,
 } from "./coords";
-import { MaskBuffer, opFromModifiers } from "./maskBuffer";
+import { MaskBuffer } from "./maskBuffer";
+import {
+  loadImageToSidecar,
+  refineMask,
+  smartSelect,
+  type SamPoint,
+} from "../api/select";
 
 type Tool = "select" | "hand";
 
@@ -24,22 +30,6 @@ function maskToCanvas(mask: MaskBuffer): HTMLCanvasElement {
   return c;
 }
 
-function stampDisc(mask: MaskBuffer, center: Pt, radius: number): Uint8Array {
-  const inc = new Uint8Array(mask.width * mask.height);
-  const r2 = radius * radius;
-  const x0 = Math.max(0, Math.floor(center.x - radius));
-  const x1 = Math.min(mask.width - 1, Math.ceil(center.x + radius));
-  const y0 = Math.max(0, Math.floor(center.y - radius));
-  const y1 = Math.min(mask.height - 1, Math.ceil(center.y + radius));
-  for (let y = y0; y <= y1; y++)
-    for (let x = x0; x <= x1; x++) {
-      const dx = x + 0.5 - center.x;
-      const dy = y + 0.5 - center.y;
-      if (dx * dx + dy * dy <= r2) inc[y * mask.width + x] = 255;
-    }
-  return inc;
-}
-
 export function CanvasStage() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [vp, setVp] = useState({ w: 800, h: 600 });
@@ -48,10 +38,13 @@ export function CanvasStage() {
   const [mask, setMask] = useState<MaskBuffer | null>(null);
   const [cursor, setCursor] = useState<Pt | null>(null);
   const [dash, setDash] = useState(0);
-  const [, force] = useState(0);
   const [tool, setTool] = useState<Tool>("select");
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [panning, setPanning] = useState(false);
+  const [imageId, setImageId] = useState<string | null>(null);
+  const [backend, setBackend] = useState<string | null>(null);
+  const [samPoints, setSamPoints] = useState<SamPoint[]>([]);
+  const [busy, setBusy] = useState(false);
 
   // gesture refs (avoid re-renders mid-drag)
   const drag = useRef<{ start: Pt; startT: ViewTransform; pan: boolean; moved: boolean; down: Pt } | null>(null);
@@ -117,7 +110,7 @@ export function CanvasStage() {
 
   const maskCanvas = useMemo(
     () => (mask && !mask.isEmpty() ? maskToCanvas(mask) : null),
-    [mask, force]
+    [mask]
   );
   const loops = useMemo(() => (mask ? mask.outline() : []), [mask, maskCanvas]);
 
@@ -128,9 +121,51 @@ export function CanvasStage() {
       setImg(image);
       setMask(new MaskBuffer(image.naturalWidth, image.naturalHeight));
       setT(fitTransform(image.naturalWidth, image.naturalHeight, vp.w, vp.h));
+      setSamPoints([]);
       URL.revokeObjectURL(url);
     };
     image.src = url;
+    // Upload to the sidecar so SAM 2 can encode it (degrades to the CPU fallback).
+    setImageId(null);
+    setBackend(null);
+    loadImageToSidecar(file)
+      .then((r) => {
+        setImageId(r.id);
+        setBackend(r.backend);
+      })
+      .catch((e) => console.error("load to sidecar failed:", e));
+  };
+
+  // Run a smart-select and replace the working mask with the result.
+  const runSelect = async (
+    points: SamPoint[],
+    box: [number, number, number, number] | null
+  ) => {
+    if (!imageId || !mask) return;
+    setSamPoints(points);
+    setBusy(true);
+    try {
+      const r = await smartSelect(imageId, points, box);
+      setMask(new MaskBuffer(r.width, r.height, r.data));
+      setBackend(r.backend);
+    } catch (e) {
+      console.error("select failed:", e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runRefine = async () => {
+    if (!imageId || !mask || mask.isEmpty()) return;
+    setBusy(true);
+    try {
+      const data = await refineMask(imageId, mask.data, mask.width, mask.height);
+      setMask(new MaskBuffer(mask.width, mask.height, data));
+    } catch (e) {
+      console.error("refine failed:", e);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const ptr = (e: any): Pt | null => e.target.getStage()?.getPointerPosition() ?? null;
@@ -172,17 +207,31 @@ export function CanvasStage() {
   const endDrag = (e: any) => {
     const d = drag.current;
     const p = ptr(e);
-    if (d && !d.pan && !d.moved && p && mask && img) {
-      // temporary select stamp (until Phase 3) — exercises shared mask + ops + ants
-      const ip = screenToImage(p, t);
-      const radius = Math.max(8, Math.min(mask.width, mask.height) * 0.06);
-      mask.apply(stampDisc(mask, ip, radius), opFromModifiers(e.evt.shiftKey, e.evt.altKey));
-      // eslint-disable-next-line no-console
-      console.log(`click image-space: (${ip.x.toFixed(2)}, ${ip.y.toFixed(2)}) @ ${(t.scale * 100).toFixed(0)}%`);
-      force((n) => n + 1);
-    }
     drag.current = null;
     setPanning(false);
+    if (!d || d.pan || !p || !mask || !img || tool !== "select") return;
+
+    if (d.moved) {
+      // box prompt → GrabCut / SAM box
+      const a = screenToImage(d.down, t);
+      const b = screenToImage(p, t);
+      const box: [number, number, number, number] = [
+        Math.min(a.x, b.x),
+        Math.min(a.y, b.y),
+        Math.max(a.x, b.x),
+        Math.max(a.y, b.y),
+      ];
+      void runSelect([], box);
+    } else {
+      // point prompt. plain = new positive; Shift = add positive; Alt = negative.
+      const ip = screenToImage(p, t);
+      const label: 0 | 1 = e.evt.altKey ? 0 : 1;
+      const accumulate = e.evt.shiftKey || e.evt.altKey;
+      const next: SamPoint[] = accumulate
+        ? [...samPoints, { x: ip.x, y: ip.y, label }]
+        : [{ x: ip.x, y: ip.y, label }];
+      void runSelect(next, null);
+    }
   };
 
   const cursorStyle = !img
@@ -201,6 +250,14 @@ export function CanvasStage() {
         hasImage={!!img}
         tool={tool}
         onTool={setTool}
+        backend={backend}
+        busy={busy}
+        canRefine={!!mask && !mask.isEmpty()}
+        onRefine={runRefine}
+        onClearSel={() => {
+          if (mask) setMask(new MaskBuffer(mask.width, mask.height));
+          setSamPoints([]);
+        }}
         onOpen={openFile}
         onIn={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1.25))}
         onOut={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1 / 1.25))}
@@ -246,6 +303,18 @@ export function CanvasStage() {
                 perfectDrawEnabled={false}
               />
             ))}
+            {samPoints.map((p, i) => (
+              <Circle
+                key={i}
+                x={p.x}
+                y={p.y}
+                radius={5 / t.scale}
+                fill={p.label ? "#22d3ee" : "#ef4444"}
+                stroke="#0a0c0f"
+                strokeWidth={1.5 / t.scale}
+                listening={false}
+              />
+            ))}
           </Layer>
         </Stage>
       </div>
@@ -259,6 +328,11 @@ function ZoomBar({
   hasImage,
   tool,
   onTool,
+  backend,
+  busy,
+  canRefine,
+  onRefine,
+  onClearSel,
   onOpen,
   onIn,
   onOut,
@@ -270,6 +344,11 @@ function ZoomBar({
   hasImage: boolean;
   tool: Tool;
   onTool: (t: Tool) => void;
+  backend: string | null;
+  busy: boolean;
+  canRefine: boolean;
+  onRefine: () => void;
+  onClearSel: () => void;
   onOpen: (f: File) => void;
   onIn: () => void;
   onOut: () => void;
@@ -323,6 +402,31 @@ function ZoomBar({
       <button style={toolBtn(tool === "hand")} onClick={() => onTool("hand")} title="Hand — pan (H, or hold Space)">
         ✋ Hand
       </button>
+      <button
+        style={btn}
+        disabled={!canRefine || busy}
+        onClick={onRefine}
+        title="Refine the selection edge (BiRefNet / matting)"
+      >
+        ✦ Refine
+      </button>
+      <button style={btn} disabled={!canRefine} onClick={onClearSel} title="Clear selection">
+        Clear
+      </button>
+      {hasImage && backend && (
+        <span
+          style={{
+            fontSize: 10.5,
+            padding: "2px 7px",
+            borderRadius: 4,
+            border: `1px solid ${backend === "sam2" ? "#22c55e" : "#64748b"}`,
+            color: backend === "sam2" ? "#22c55e" : "#94a3b8",
+          }}
+          title={backend === "sam2" ? "SAM 2 on GPU" : "Classical CPU fallback (no SAM weights)"}
+        >
+          {busy ? "…" : backend === "sam2" ? "SAM 2" : "CPU select"}
+        </span>
+      )}
       <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
       <button style={btn} disabled={!hasImage} onClick={onOut}>
         −

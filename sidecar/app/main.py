@@ -12,16 +12,25 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI
+import uuid
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app import imaging
 from app import settings as settings_store
 from app.constants import APP_NAME, DEFAULT_PORT, PORT_ENV, PORT_STDOUT_PREFIX
 from app.device import banner, detect_device
+from app.matting import EdgeRefiner
+from app.select_sam import SmartSelector
 
 app = FastAPI(title=f"{APP_NAME} sidecar")
+
+# ML singletons (lazy heavy deps; both degrade to CPU fallbacks).
+_selector = SmartSelector()
+_refiner = EdgeRefiner()
 
 # The webview origin is not fixed in dev; allow all (loopback-only service).
 app.add_middleware(
@@ -63,6 +72,63 @@ def post_settings(body: SettingsIn) -> dict:
     """Save provided keys; only fields present in the body are touched."""
     updates = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
     return settings_store.save_secrets(updates)
+
+
+class SelectIn(BaseModel):
+    id: str
+    points: list[list[float]] = []  # [[x, y], ...] in image space
+    labels: list[int] = []          # 1 = positive, 0 = negative (paired with points)
+    box: Optional[list[float]] = None  # [x0, y0, x1, y1]
+
+
+class RefineIn(BaseModel):
+    id: str
+    mask_png: str  # base64 PNG of the current binary mask
+
+
+@app.post("/load")
+async def load_image(file: UploadFile = File(...)) -> dict:
+    raw = await file.read()
+    rgb = imaging.load_rgb(raw)
+    image_id = uuid.uuid4().hex
+    session = imaging.ImageSession(image_id, rgb)
+    imaging.set_active(session)
+    _selector.set_image(rgb, image_id)  # SAM encodes once here
+    return {
+        "id": image_id,
+        "width": session.width,
+        "height": session.height,
+        "backend": _selector.backend,
+    }
+
+
+@app.post("/select")
+def select(body: SelectIn) -> dict:
+    try:
+        session = imaging.require_active(body.id)
+    except KeyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    _selector.set_image(session.rgb, session.image_id)
+    mask = _selector.select(body.points, body.labels, body.box)
+    return {
+        "mask_png": imaging.png_to_base64(mask),
+        "width": session.width,
+        "height": session.height,
+        "backend": _selector.backend,
+    }
+
+
+@app.post("/refine")
+def refine(body: RefineIn) -> dict:
+    try:
+        session = imaging.require_active(body.id)
+    except KeyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    mask = imaging.base64_to_gray(body.mask_png)
+    if mask.shape[:2] != (session.height, session.width):
+        raise HTTPException(status_code=400, detail="mask size != image size")
+    alpha = _refiner.refine(session.rgb, mask)
+    return {"mask_png": imaging.png_to_base64(alpha), "backend": _refiner.backend}
 
 
 def _ui_dir() -> Path | None:

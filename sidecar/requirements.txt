@@ -7,20 +7,23 @@
 #
 # Phase 0 only needs the web stack; ML libs are added in later phases.
 
-# --- web / sidecar (Phase 0) ---
+# --- web / sidecar ---
 fastapi>=0.115,<0.117
 uvicorn[standard]>=0.30,<0.35
 pydantic>=2.7,<3
 httpx>=0.27,<0.29
 python-dotenv>=1.0,<2
+python-multipart>=0.0.9        # /load file upload (Phase 3)
 pillow>=10.3
 numpy>=1.26,<3
 
-# --- ML (added/uncommented as phases land) ---
-# torch, torchvision            # install per-CUDA, see note above (Phase 0 verify, Phase 3 SAM)
-# opencv-python-headless>=4.9   # live-wire cost map (Phase 4), compositing (Phase 6)
-# scipy>=1.11                   # gradients / zero-crossings (Phase 4)
-# sam2                          # SAM 2 (Phase 3) — from facebookresearch/sam2
-# birefnet / transformers       # edge matting (Phase 3)
-# pyyaml>=6                     # .nprofile parsing (Phase 8)
-# jsonschema>=4                 # .nprofile validation (Phase 8)
+# --- CPU ML / imaging (run everywhere; GPU paths layer on top) ---
+opencv-python-headless>=4.9    # fallback select (GrabCut/flood), matting, live-wire, composite
+scipy>=1.11                    # gradients / zero-crossings (Phase 4)
+pyyaml>=6                      # .nprofile parsing (Phase 8)
+jsonschema>=4                  # .nprofile validation (Phase 8)
+
+# --- heavy / GPU (install separately on the target; auto-detected at runtime) ---
+# torch, torchvision           # install per-CUDA: --index-url https://download.pytorch.org/whl/cu124
+# sam2                         # SAM 2 (Phase 3) — from facebookresearch/sam2 + a checkpoint
+# transformers                 # BiRefNet edge matting (Phase 3)

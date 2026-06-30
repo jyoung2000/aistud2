@@ -16,9 +16,9 @@ VENV="$REPO/sidecar/.venv"
 [ -d "$VENV" ] || "$PY" -m venv "$VENV" || { echo "Could not create Python environment."; read -r _; exit 1; }
 VPY="$VENV/bin/python"
 
-echo "Preparing Neuclip Studio (first run only)…"
+echo "Preparing Neuclip Studio (first run only — this installs a few packages)…"
 "$VPY" -m pip install --quiet --upgrade pip
-"$VPY" -m pip install --quiet fastapi "uvicorn[standard]" || { echo "Dependency install failed."; read -r _; exit 1; }
+"$VPY" -m pip install --quiet -r "$REPO/sidecar/requirements.txt" || { echo "Dependency install failed."; read -r _; exit 1; }
 
 # Build the UI only if it's missing AND Node is available (a built UI ships in the repo).
 if [ ! -f "$REPO/frontend/dist/index.html" ] && command -v npm >/dev/null 2>&1; then

@@ -178,7 +178,16 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
       Cmd/Ctrl +/−/0(fit)/1(100%) about center, zoom-bar buttons. Pan: Hand tool, spacebar
       temp-hand (autorepeat-guarded, ignored while typing), middle-mouse drag; grab/grabbing
       cursors; 3px move threshold separates click-select from drag-pan. (`canvas/canvasStage.tsx`)
-- [ ] Phase 3 — Smart select (SAM 2) + refine
+- [x] **Phase 3** — Smart select + refine. Sidecar `/load` `/select` `/refine`
+      (`imaging.py` session+codec, `select_sam.py`, `matting.py`). SAM 2 encode-once/
+      decode-many on GPU when `sam2` + a checkpoint are present (env `NEUCLIP_SAM2_*`);
+      **classical CPU fallback** (OpenCV GrabCut for box, flood region-grow for points) so
+      select runs anywhere. Refine = BiRefNet (env `NEUCLIP_BIREFNET_MODEL`) else
+      edge-aware morphological feather. Frontend: `api/select.ts` + canvas Smart-Select
+      tool (click=positive, Shift=add, Alt=negative, drag=box), point markers, Refine/Clear,
+      backend badge (SAM 2 vs CPU). Fallback verified e2e (point→exact bbox, box→GrabCut,
+      refine→soft edges). requirements.txt now installs opencv/scipy/multipart; launchers
+      install full requirements.
 - [ ] Phase 4 — Lasso tools (freehand / polygonal / magnetic live-wire)
 - [ ] Phase 5 — Manual editable selection (pen-grade)
 - [ ] Phase 6 — Edit pipeline: crop-composite + first model

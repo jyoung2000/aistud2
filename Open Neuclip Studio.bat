@@ -18,9 +18,9 @@ if not exist "%REPO%\sidecar\.venv" (
 )
 set "VPY=%REPO%\sidecar\.venv\Scripts\python.exe"
 
-echo Preparing Neuclip Studio (first run only)...
+echo Preparing Neuclip Studio (first run only - this installs a few packages)...
 "%VPY%" -m pip install --quiet --upgrade pip
-"%VPY%" -m pip install --quiet fastapi uvicorn[standard] || (echo Dependency install failed. & pause & exit /b 1)
+"%VPY%" -m pip install --quiet -r "%REPO%\sidecar\requirements.txt" || (echo Dependency install failed. & pause & exit /b 1)
 
 REM Build the UI only if missing AND Node is available (a built UI ships in the repo).
 if not exist "%REPO%\frontend\dist\index.html" (
