@@ -112,12 +112,20 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
   run+queue · [ ] M4 comparison view · [ ] M5 commit+feedback · [ ] M6 auto-rank.
 
 ## Launching / packaging
-- **Consumer install (endgame):** `tauri build` → Windows `.msi`/NSIS `.exe`, macOS
-  `.dmg`/`.app` (double-click, no terminal). Built per-OS in CI (`.github/workflows/
-  release.yml`) since cross-building isn't possible from the Linux dev container.
-- **Bridge launchers (`launchers/`):** double-clickable `Start Neuclip Studio.command`
-  (macOS) and `.bat` (Windows) that auto-install toolchains (Homebrew / winget) + deps and
-  open the dev GUI — for use before a tagged release exists.
+- **Easy path — single-file app (DEFAULT consumer artifact):** one self-contained binary
+  that bundles the FastAPI sidecar + the built web UI; on launch it serves the UI and opens
+  the browser. NO Python/Node/Rust/Tauri for the end user, no compile step. Entry:
+  `sidecar/app/desktop.py` → `main.serve_app()`; UI located via `_ui_dir()` (frozen:
+  `sys._MEIPASS/web`, dev: `frontend/dist`) and mounted at `/`. Built by `sidecar/
+  build_app.py` (PyInstaller `--onefile --windowed`, `--add-data dist:web`). CI: `.github/
+  workflows/app.yml` builds Win/macOS(arm+intel)/Linux on tag push → draft Release. The
+  frontend uses same-origin requests in production (`api/sidecar.ts` `baseUrl()` returns
+  "" unless Tauri or vite-dev).
+- **Polished native (optional, later):** `tauri build` → `.msi`/`.dmg`/AppImage via
+  `.github/workflows/release.yml` (manual dispatch — compiles Rust). The native shell uses
+  the externalBin sidecar + `sidecar_port` handshake.
+- **Dev-from-source launchers (`launchers/`, advanced):** `Start Neuclip Studio.command` /
+  `.bat` auto-install toolchains and run the Tauri dev GUI. De-emphasized vs the easy path.
 
 ## Sidecar API surface (target)
 `/health` `/load` `/select` `/refine` `/livewire/costmap` `/generate` `/poll`

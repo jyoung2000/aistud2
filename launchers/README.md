@@ -1,45 +1,54 @@
 # Opening Neuclip Studio
 
-Two ways to run the app — pick one.
+## ⭐ The easy way — one download, double-click (no setup)
 
-## A. The easy installers (recommended, no terminal)
+Neuclip Studio ships as a **single self-contained app**. There is nothing to install — no
+Python, Node, or Rust. It starts a small local server and opens the app in your browser.
 
-Once a release has been published, download the installer for your OS from the repo's
-**Releases** page and double-click it:
+1. Go to the repo's **Releases** page.
+2. Download the file for your computer:
+   - **Windows** → `Neuclip-Studio-Windows.zip` → unzip → double-click **`Neuclip Studio.exe`**
+   - **Mac (Apple Silicon / M1–M4)** → `Neuclip-Studio-macOS-AppleSilicon.zip` → unzip → double-click **`Neuclip Studio.app`**
+   - **Mac (Intel)** → `Neuclip-Studio-macOS-Intel.zip`
+   - **Linux** → `Neuclip-Studio-Linux.zip`
+3. It opens in your default browser. That's it.
 
-- **Windows** — `Neuclip-Studio_x64-setup.exe` (or `.msi`) → click through → launch from the
-  Start menu.
-- **macOS** — `Neuclip-Studio_x64.dmg` (Intel) or `aarch64.dmg` (Apple Silicon) → drag the
-  app to Applications → open it.
+> **First-open security prompt (normal for unsigned apps):**
+> - **macOS:** right-click the app ▸ **Open** ▸ **Open** (only needed the first time).
+> - **Windows:** if SmartScreen warns, click **More info ▸ Run anyway**.
 
-These are produced automatically by `.github/workflows/release.yml` when a version tag
-(e.g. `v0.1.0`) is pushed. They bundle the Python sidecar — nothing else to install.
+### No release yet? Build the app once (still no Rust/Node for end users)
+On any one machine with Python 3.11 + Node:
+```bash
+npm --prefix frontend install && npm --prefix frontend run build
+pip install -r sidecar/requirements.txt pyinstaller
+python sidecar/build_app.py
+# -> sidecar/dist/Neuclip Studio[.exe / .app]  — copy it anywhere and double-click.
+```
+Or just **push a version tag** and let CI build all four downloads for you:
+```bash
+git tag v0.1.0 && git push origin v0.1.0   # see .github/workflows/app.yml
+```
 
-> First open on macOS may say "unidentified developer" (the app isn't notarized yet):
-> right-click the app ▸ **Open** ▸ **Open**. On Windows, SmartScreen may warn: **More info
-> ▸ Run anyway**. This is normal for unsigned builds.
+---
 
-## B. The double-click bootstrap launchers (before a release exists)
+## 🛠️ Advanced — the full native desktop build (optional)
 
-If there's no release yet, use the launcher for your OS in this folder. It installs the
-toolchains and dependencies for you and opens the app. **The first run downloads and
-compiles a lot — expect 10–30 min.** Later runs open in seconds.
+The single-file app above runs in your browser. If you specifically want the **native Tauri
+desktop window** (and to develop the app), use the bootstrap launchers in this folder. They
+install the toolchains (Python, Node, Rust, build tools) and compile the app. **This is a
+real developer setup — the first run downloads and compiles a lot (10–30 min).** Most
+people should use the easy way above instead.
 
-- **macOS** — double-click **`Start Neuclip Studio.command`**.
-  First time only: right-click ▸ **Open** ▸ **Open** (clears Gatekeeper on the script).
-  It installs Homebrew, Python, Node, and Rust if missing — you may be asked for your
-  password.
-- **Windows** — double-click **`Start Neuclip Studio.bat`**.
-  It uses `winget` to install Python, Node, Rust, and the C++ build tools. After the first
-  install pass it asks you to **double-click it once more** (so Windows picks up the new
-  tools on `PATH`).
+- **macOS** — `Start Neuclip Studio.command` (right-click ▸ Open the first time).
+- **Windows** — `Start Neuclip Studio.bat` (needs `winget`; re-run once after it installs tools).
 
-Both launchers are safe to re-run; they skip anything already installed.
+Native installers (`.dmg` / `.msi`) are produced by the manual **"Native installers
+(Tauri)"** workflow in the Actions tab.
 
-### Requirements the launchers can't auto-fix
-- **Windows:** needs `winget` (ships with Windows 10/11 "App Installer" — update it from
-  the Microsoft Store if missing).
-- A working internet connection for the first run.
-- The full **GPU** experience (SAM 2, matting, generation) needs an NVIDIA GPU + CUDA
-  PyTorch. The launcher installs the CPU-capable parts; install CUDA PyTorch per the root
-  `README.md` to light up the RTX 4070.
+---
+
+### GPU note
+The full ML experience (SAM 2 select, edge matting, generation) needs an NVIDIA GPU + CUDA
+PyTorch on the machine running the app. Install it per the root `README.md`. The downloads
+above open the app UI everywhere; GPU features light up where CUDA is available.

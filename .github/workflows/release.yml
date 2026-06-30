@@ -1,12 +1,9 @@
-name: Release installers
+name: Native installers (Tauri)
 
-# Push a version tag to build double-click installers for every OS and attach them to a
-# GitHub Release:   git tag v0.1.0 && git push origin v0.1.0
-# (Or run manually from the Actions tab.)
+# Polished native desktop installers (.dmg / .msi / AppImage) via Tauri. This is the
+# heavier path (compiles Rust); the simple double-click app is built by app.yml on tag
+# push. Run THIS one manually from the Actions tab when you want native installers.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:

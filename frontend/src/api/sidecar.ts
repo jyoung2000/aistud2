@@ -34,8 +34,16 @@ export async function getSidecarPort(): Promise<number> {
   return cachedPort;
 }
 
+/**
+ * Base URL for sidecar calls, resolved per runtime:
+ *  - Tauri native app  → cross-process port from the Rust `sidecar_port` command.
+ *  - Vite dev server   → explicit 127.0.0.1:<port> (UI on 5173, sidecar elsewhere).
+ *  - Single-file app    → "" (same origin): the sidecar serves the built UI itself.
+ */
 export async function baseUrl(): Promise<string> {
-  return `http://127.0.0.1:${await getSidecarPort()}`;
+  if (inTauri()) return `http://127.0.0.1:${await getSidecarPort()}`;
+  if (import.meta.env?.DEV) return `http://127.0.0.1:${await getSidecarPort()}`;
+  return ""; // production build served by the sidecar — relative requests
 }
 
 export async function getHealth(): Promise<HealthResponse> {
