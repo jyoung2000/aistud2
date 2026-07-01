@@ -38,6 +38,17 @@ _GPU_COLLECT = [
 ]
 
 
+def _installed(pkg: str) -> bool:
+    """True if `pkg` is importable. Safe for dotted submodules whose parent may be absent
+    (importlib.util.find_spec raises ModuleNotFoundError in that case)."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(pkg) is not None
+    except ModuleNotFoundError:
+        return False
+
+
 def _verify_cuda_torch() -> None:
     """A GPU build is only meaningful if CUDA torch is installed in THIS environment —
     PyInstaller bundles whatever's importable here. Fail loudly otherwise."""
@@ -90,8 +101,14 @@ def main() -> None:
         # would re-extract gigabytes to temp on every double-click). Bundle CUDA wholesale.
         _verify_cuda_torch()
         cmd += ["--onedir"]
+        # Only --collect-all packages that are actually installed. On Windows the CUDA libs
+        # ship INSIDE the torch wheel (torch/lib/*.dll) and the standalone nvidia-* packages
+        # are usually absent, so collecting a missing one would abort the build.
         for pkg in _GPU_COLLECT:
-            cmd += ["--collect-all", pkg]
+            if _installed(pkg):
+                cmd += ["--collect-all", pkg]
+            else:
+                print(f"  (skipping --collect-all {pkg}: not installed)")
     else:
         cmd += ["--onefile"]
 

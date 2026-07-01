@@ -56,8 +56,9 @@ pip install -r sidecar/requirements.txt pyinstaller
 python sidecar/build_app.py
 # -> sidecar/dist/Neuclip Studio[.exe / .app]  — copy it anywhere and double-click.
 ```
-**GPU build (NVIDIA, activates CUDA on double-click):** on a Windows machine with an NVIDIA GPU,
-install the CUDA wheel first, then build with `--gpu`:
+**GPU build (NVIDIA, activates CUDA on double-click):** the easiest way is to double-click
+**`Build Standalone App.bat`** — after the CPU build it detects an NVIDIA GPU and offers to build
+the GPU version too (installs CUDA PyTorch, then builds). Or do it by hand:
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 python sidecar/build_app.py --gpu

@@ -1,8 +1,9 @@
 @echo off
 REM Neuclip Studio - build the standalone app (Windows).
-REM Double-click to produce "Neuclip Studio.exe" in this folder: a single file you can copy
-REM to any PC and double-click, with NO Python needed on that machine.
-REM This takes a minute. For everyday use, "Open Neuclip Studio.bat" is faster.
+REM Produces "Neuclip Studio.exe" (CPU, one file) in this folder, and on an NVIDIA machine
+REM offers to also build "Neuclip Studio GPU" (a folder) that uses your GPU on double-click.
+REM Copy either to any PC and double-click - NO Python needed on that machine.
+REM This takes a minute (CPU) / several minutes (GPU). For everyday use, "Open Neuclip Studio.bat" is faster.
 setlocal
 title Build Neuclip Studio
 cd /d "%~dp0"
@@ -29,10 +30,38 @@ if not exist "%REPO%\frontend\dist\index.html" (
   where npm >nul 2>&1 && ( pushd "%REPO%\frontend" && call npm install --no-audit --no-fund && call npm run build && popd )
 )
 
-echo Building the standalone app...
+echo Building the standalone CPU app...
 "%VPY%" "%REPO%\sidecar\build_app.py" || (echo Build failed. & pause & exit /b 1)
 
-if exist "%REPO%\Neuclip Studio.exe" explorer /select,"%REPO%\Neuclip Studio.exe"
+REM --- Optional GPU build (NVIDIA - bundles CUDA PyTorch, uses the GPU on double-click) ------
+where nvidia-smi >nul 2>&1
+if errorlevel 1 goto :done
 echo.
-echo Done. Double-click "Neuclip Studio.exe" in this folder to run it.
+echo ============================================================================
+echo   An NVIDIA GPU was detected.
+echo   The GPU build bundles CUDA PyTorch, so double-clicking it uses your GPU
+echo   with NO install and NO first-run download. It is LARGE:
+echo     - a ~2.5 GB one-time CUDA PyTorch download
+echo     - a ~4-5 GB output folder ("Neuclip Studio GPU")
+echo ============================================================================
+set "BUILDGPU=Y"
+set /p "BUILDGPU=Build the GPU version too? [Y/n]: "
+if /I not "%BUILDGPU%"=="Y" goto :done
+
+echo.
+echo Installing CUDA PyTorch (one-time, large - please wait)...
+"%VPY%" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 || (echo CUDA PyTorch install failed. & pause & exit /b 1)
+echo Building the GPU app (this takes several minutes)...
+"%VPY%" "%REPO%\sidecar\build_app.py" --gpu || (echo GPU build failed. & pause & exit /b 1)
+
+:done
+echo.
+if exist "%REPO%\Neuclip Studio GPU" (
+  echo Done. For your NVIDIA GPU, open the "Neuclip Studio GPU" folder and double-click
+  echo the .exe inside it. ^(The plain "Neuclip Studio.exe" is the small CPU-only build.^)
+  explorer /select,"%REPO%\Neuclip Studio GPU"
+) else (
+  if exist "%REPO%\Neuclip Studio.exe" explorer /select,"%REPO%\Neuclip Studio.exe"
+  echo Done. Double-click "Neuclip Studio.exe" in this folder to run it ^(CPU^).
+)
 pause
