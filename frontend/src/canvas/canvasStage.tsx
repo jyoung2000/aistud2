@@ -9,7 +9,7 @@ import {
   type ViewTransform,
 } from "./coords";
 import { MaskBuffer, opFromModifiers, type BoolOp } from "./maskBuffer";
-import { rasterizePolygon, dist, constrain45, flatten, appendFreehand } from "./lasso";
+import { rasterizeCoverage, featherCoverage, dist, constrain45, flatten, appendFreehand } from "./lasso";
 import { LiveWire } from "./livewire";
 import {
   emptyPath,
@@ -158,6 +158,9 @@ export function CanvasStage() {
   const imgPx = useRef<ImgPx | null>(null); // cached base pixels for magic wand
   const [wandTol, setWandTol] = useState(0.15);
   const [wandContig, setWandContig] = useState(true);
+  // shared selection-edge options (all lasso/wand/brush tools commit through commitMask)
+  const [antialias, setAntialias] = useState(true);
+  const [feather, setFeather] = useState(0); // px (Gaussian radius of the selection channel)
   const [semanticText, setSemanticText] = useState("");
   const [namedSel, setNamedSel] = useState<{ name: string; data: Uint8Array }[]>([]);
   const [selNote, setSelNote] = useState<string | null>(null);
@@ -823,17 +826,26 @@ export function CanvasStage() {
     }
   };
 
+  // --- shared commit pipeline (invariant #3) ---
+  // Every selection tool feeds a coverage mask (0–255) here: optional feather (Gaussian blur of
+  // the selection channel) → boolean composite via the gesture-start op → ants/bbox refresh.
+  // Anti-alias is decided at rasterization (rasterizeCoverage) so hard/soft edges share one path.
+  const commitMask = (incoming: Uint8Array, op: BoolOp, snapshot = true) => {
+    if (!mask) return;
+    if (snapshot) pushHistory();
+    const cov = feather > 0 ? featherCoverage(incoming, mask.width, mask.height, feather) : incoming;
+    const next = mask.clone();
+    next.apply(cov, op);
+    setMask(next);
+  };
+
   // --- lasso ---
   const commitLasso = (pts: Pt[]) => {
     if (!mask || pts.length < 3) {
       cancelLasso();
       return;
     }
-    pushHistory();
-    const inc = rasterizePolygon(pts, mask.width, mask.height);
-    const next = mask.clone();
-    next.apply(inc, lassoOp.current);
-    setMask(next);
+    commitMask(rasterizeCoverage(pts, mask.width, mask.height, antialias), lassoOp.current);
     cancelLasso();
   };
   const cancelLasso = () => {
@@ -985,11 +997,8 @@ export function CanvasStage() {
       cancelPen();
       return;
     }
-    pushHistory();
     const poly = flattenPath({ ...pen, closed: true });
-    const next = mask.clone();
-    next.apply(rasterizePolygon(poly, mask.width, mask.height), penOp.current);
-    setMask(next);
+    commitMask(rasterizeCoverage(poly, mask.width, mask.height, antialias), penOp.current);
     cancelPen();
   };
   const invertMask = () => {
@@ -1030,10 +1039,7 @@ export function CanvasStage() {
     } else {
       for (let i = 0; i < w * h; i++) if (close(i)) inc[i] = 255;
     }
-    pushHistory();
-    const next = mask.clone();
-    next.apply(inc, op);
-    setMask(next);
+    commitMask(inc, op);
   };
 
   const modifySel = (fn: (m: MaskBuffer) => void) => {
@@ -1928,6 +1934,10 @@ export function CanvasStage() {
         onLassoMode={setLassoMode}
         selPct={mask && !mask.isEmpty() ? (mask.area() / (mask.width * mask.height)) * 100 : 0}
         onInvert={invertMask}
+        antialias={antialias}
+        onAntialias={setAntialias}
+        feather={feather}
+        onFeather={setFeather}
         backend={backend}
         busy={busy}
         canRefine={!!mask && !mask.isEmpty()}
@@ -2723,6 +2733,10 @@ function ZoomBar({
   onLassoMode,
   selPct,
   onInvert,
+  antialias,
+  onAntialias,
+  feather,
+  onFeather,
   canUndo,
   canRedo,
   onUndo,
@@ -2754,6 +2768,10 @@ function ZoomBar({
   onLassoMode: (m: LassoMode) => void;
   selPct: number;
   onInvert: () => void;
+  antialias: boolean;
+  onAntialias: (v: boolean) => void;
+  feather: number;
+  onFeather: (v: number) => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -2868,6 +2886,22 @@ function ZoomBar({
       <button style={btn} disabled={!canRefine} onClick={onClearSel} title="Clear selection">
         Clear
       </button>
+      {/* shared selection-edge options — apply to every select tool's next commit */}
+      <label style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, color: "#8aa0b8", cursor: "pointer" }} title="Anti-alias the selection edge (sub-pixel coverage)">
+        <input type="checkbox" checked={antialias} onChange={(e) => onAntialias(e.target.checked)} style={{ accentColor: "#22d3ee" }} />
+        AA
+      </label>
+      <label style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, color: "#8aa0b8" }} title="Feather radius (px) — Gaussian softness of the selection edge">
+        feather
+        <input
+          type="number"
+          min={0}
+          max={1000}
+          value={feather}
+          onChange={(e) => onFeather(Math.max(0, Math.min(1000, Number(e.target.value) || 0)))}
+          style={{ width: 42, background: "#0d0f12", color: "#e2e8f0", border: "1px solid #233037", borderRadius: 5, padding: "2px 4px", fontSize: 11 }}
+        />
+      </label>
       {selPct > 0 && (
         <span style={{ fontSize: 10.5, color: "#22d3ee" }}>sel {selPct.toFixed(1)}%</span>
       )}

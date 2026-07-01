@@ -75,31 +75,36 @@ export class MaskBuffer {
     return this.data[this.idx(x, y)];
   }
 
-  /** Combine an incoming binary mask (same dims; any non-zero = set) via the op. */
+  /**
+   * Composite an incoming coverage mask (0–255 fractional alpha; binary 0/255 is the common case)
+   * into this buffer via the boolean op. Fractional-aware so anti-aliased/feathered edges survive:
+   *   replace = b · add = max(a,b) · subtract = a·(1−b) · intersect = min(a,b)
+   * For binary inputs this reduces exactly to the old union/subtract/intersect behavior.
+   */
   apply(incoming: Uint8Array, op: BoolOp): void {
     const d = this.data;
     if (incoming.length !== d.length) {
       throw new Error("mask size mismatch");
     }
     for (let i = 0; i < d.length; i++) {
-      const a = d[i] ? 1 : 0;
-      const b = incoming[i] ? 1 : 0;
+      const a = d[i];
+      const b = incoming[i];
       let r: number;
       switch (op) {
         case "replace":
           r = b;
           break;
         case "add":
-          r = a | b;
+          r = a > b ? a : b;
           break;
         case "subtract":
-          r = a & (b ? 0 : 1);
+          r = (a * (255 - b) + 127) / 255;
           break;
         case "intersect":
-          r = a & b;
+          r = a < b ? a : b;
           break;
       }
-      d[i] = r ? 255 : 0;
+      d[i] = r < 0 ? 0 : r > 255 ? 255 : Math.round(r);
     }
   }
 
@@ -107,10 +112,10 @@ export class MaskBuffer {
     return !this.data.some((v) => v !== 0);
   }
 
-  /** Invert the selection in place (subject ↔ background). */
+  /** Invert the selection in place (subject ↔ background), coverage-preserving. */
   invert(): void {
     const d = this.data;
-    for (let i = 0; i < d.length; i++) d[i] = d[i] ? 0 : 255;
+    for (let i = 0; i < d.length; i++) d[i] = 255 - d[i];
   }
 
   /** Dilate (grow) by r px (separable box). */
@@ -170,7 +175,8 @@ export class MaskBuffer {
     // Collect boundary edges as directed corner-to-corner unit segments.
     type Edge = [number, number]; // [fromKey, toKey]
     const edges: Edge[] = [];
-    const filled = (x: number, y: number) => this.get(x, y) !== 0;
+    // Trace the ~50%-coverage contour so anti-aliased fringes don't wander the ants.
+    const filled = (x: number, y: number) => this.get(x, y) >= 128;
 
     for (let y = 0; y < this.height; y++) {
       for (let x = 0; x < W; x++) {
@@ -223,12 +229,13 @@ export class MaskBuffer {
     const rgba = new Uint8ClampedArray(this.data.length * 4);
     const [r, g, b] = color;
     for (let i = 0; i < this.data.length; i++) {
-      if (this.data[i]) {
+      const cov = this.data[i];
+      if (cov) {
         const o = i * 4;
         rgba[o] = r;
         rgba[o + 1] = g;
         rgba[o + 2] = b;
-        rgba[o + 3] = alpha;
+        rgba[o + 3] = (alpha * cov) / 255; // scale overlay by coverage → AA edges read softly
       }
     }
     return rgba;
