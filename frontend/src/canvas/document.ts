@@ -12,7 +12,7 @@ export type BlendMode =
   | "lighten"
   | "difference";
 
-export type LayerKind = "base" | "ai-edit" | "adjustment" | "outpaint" | "decomposed";
+export type LayerKind = "base" | "ai-edit" | "adjustment" | "outpaint" | "decomposed" | "imported";
 
 export type Region = [number, number, number, number]; // x0,y0,x1,y1 image space
 export type LayerBounds = [number, number, number, number]; // x,y,w,h image space

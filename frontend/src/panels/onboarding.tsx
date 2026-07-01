@@ -88,6 +88,23 @@ const WALK: WalkStep[] = [
   },
   {
     badge: "5",
+    color: AMBER,
+    title: "Combine images (import & flatten)",
+    body: (
+      <>
+        <b>File ▸ Import image</b> drops another photo onto the canvas as a <b>movable, scalable
+        layer</b> — position it with the <b>Move</b> tool for collages and composites. One catch:
+        the AI edits the <i>base</i> image, so it can't see an imported layer until you bake it in.
+        Hit <b>Flatten for AI</b> (the AI-side amber button, also offered right above Generate when
+        your selection overlaps an import) to merge everything into the base — then selecting and
+        editing the imported content works exactly like the rest of the picture. A great combo:
+        paste an object, flatten, then select it and let harmonization match its light &amp; color
+        to the scene.
+      </>
+    ),
+  },
+  {
+    badge: "6",
     color: "#e9ecf2",
     title: "Layers, move & finish",
     body: (

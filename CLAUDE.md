@@ -213,10 +213,10 @@ control signal — the **edited** rig, not the raw extraction, becomes the contr
 - `frontend/src/panels/onboarding.tsx` — a stepped overlay shown once on first launch (gated by
   `localStorage` `neuclip.onboarded.v2`, mounted from `App.tsx` after the sidecar connects).
   Steps: welcome → **API keys** (WaveSpeed + Anthropic, `Save & test connection` runs
-  `loadModels(true)` and reports the live-model count / error / device) → 5-card **UI walkthrough**
+  `loadModels(true)` and reports the live-model count / error / device) → 6-card **UI walkthrough**
   (open+auto-separate, select tools + cyan-ants/boolean-ops, amber inspector + crop-only send,
-  compare/shootout, layers + Move tool + export) → done. Re-openable via ⚙ Settings ▸ **Show
-  walkthrough**. Cyan=selection / amber=AI messaging is reinforced throughout.
+  compare/shootout, **import & flatten-for-AI**, layers + Move tool + export) → done. Re-openable via
+  ⚙ Settings ▸ **Show walkthrough**. Cyan=selection / amber=AI messaging is reinforced throughout.
 
 ## Sidecar <-> Tauri handshake (Phase 0, IMPLEMENTED)
 - Sidecar binds a port: tries `NEUCLIP_SIDECAR_PORT` (default 8756); on conflict it
@@ -243,6 +243,21 @@ control signal — the **edited** rig, not the raw extraction, becomes the contr
   shown as a **solid bounding box + transform handles** (NEVER cyan ants). Defines *what you
   move/toggle/transform*. The Move-tool drag-marquee selects **layers** by `bounds` intersection
   — a different gesture/outcome from the selection tools' box-select that writes a mask.
+
+## Import image as layer + Flatten for AI (`canvas/canvasStage.tsx`)
+- **Import image** (`importImageAsLayer`, FileBar **+ Import image**): drops another photo as a
+  `kind:'imported'` layer — full-doc-sized pixels with the photo placed centered (~60% of the
+  smaller dim), a mask over the placed rect, `bounds` + identity `transform`; auto-selects it and
+  switches to the **Move** tool so it's immediately positionable/scalable (collage). It is NOT
+  baked into the base, so AI edits (which crop the sidecar base) don't touch it yet.
+- **Flatten for AI** (`flattenForAI`, FileBar **⤵ Flatten for AI**): bakes the whole visible
+  composite (base + all layers incl. imports; base drawn under first when decomposed to avoid
+  black holes) into a NEW base, re-uploads it to the sidecar (`/load`), and resets the layer
+  stack — so selections + generation now see the imported/edited pixels. A deliberate commit
+  (undoable). Reuses the outpaint→new-base pattern.
+- **Overlap hint:** `selectionOverlapsImport` (mask bbox ∩ any imported layer's `transformedBounds`)
+  shows an amber warning + inline **Flatten for AI** button right above Generate, so a selection
+  over an un-baked import can't silently no-op. Explained in onboarding card 5.
 
 ## Auto-layer model additions (`canvas/document.ts`)
 - `Layer.bounds:[x,y,w,h]` (image space, `boundsFromMask`/`layerBounds`) for marquee hit-testing;

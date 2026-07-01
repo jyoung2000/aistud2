@@ -172,6 +172,20 @@ export function CanvasStage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [img, layers, imgVer, decomposed]);
 
+  // True when the current selection overlaps an imported layer that isn't baked into the base
+  // yet — the AI won't see those pixels until "Flatten for AI".
+  const selectionOverlapsImport = useMemo(() => {
+    if (!mask || mask.isEmpty()) return false;
+    const mb = mask.bbox();
+    if (!mb || !img) return false;
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    return layers.some(
+      (L) => L.kind === "imported" && L.visible && rectsIntersect(mb, transformedBounds(L, W, H))
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mask, layers, imgVer]);
+
   const thumbs = useMemo(() => {
     const m = new Map<string, string>();
     layers.forEach((L) => L.resultUrl && m.set(L.id, L.resultUrl));
@@ -440,6 +454,114 @@ export function CanvasStage() {
         void runDecompose("simple", r.id);
       })
       .catch((e) => console.error("load to sidecar failed:", e));
+  };
+
+  // Import an extra image as a movable/scalable layer (collage). It is NOT baked into the
+  // base, so AI edits (which crop from the base) won't touch it until you "Flatten for AI".
+  const importImageAsLayer = (file: File) => {
+    if (!img) return;
+    const url = URL.createObjectURL(file);
+    const im = new window.Image();
+    im.onload = () => {
+      const W = img.naturalWidth;
+      const H = img.naturalHeight;
+      // initial placement: fit to ~60% of the smaller doc dimension, centered
+      const target = 0.6 * Math.min(W, H);
+      const s = Math.min(target / im.naturalWidth, target / im.naturalHeight, 1);
+      const pw = Math.max(1, Math.round(im.naturalWidth * s));
+      const ph = Math.max(1, Math.round(im.naturalHeight * s));
+      const px = Math.round((W - pw) / 2);
+      const py = Math.round((H - ph) / 2);
+      // full-doc canvas with the image placed (layer pixels are full-doc sized, contract)
+      const c = document.createElement("canvas");
+      c.width = W;
+      c.height = H;
+      c.getContext("2d")!.drawImage(im, px, py, pw, ph);
+      const dataUrl = c.toDataURL("image/png");
+      // mask marks only the placed rect
+      const m = new Uint8Array(W * H);
+      for (let y = py; y < py + ph; y++) {
+        const row = y * W;
+        for (let x = px; x < px + pw; x++) m[row + x] = 255;
+      }
+      const placed = new window.Image();
+      placed.onload = () => {
+        pushHistory();
+        const id = newLayerId();
+        layerImgs.current.set(id, placed);
+        const n = layers.filter((l) => l.kind === "imported").length + 1;
+        const layer: DocLayer = {
+          id,
+          name: `Imported ${n}`,
+          visible: true,
+          opacity: 1,
+          blendMode: "normal",
+          kind: "imported",
+          mask: m,
+          resultUrl: dataUrl,
+          bounds: [px, py, pw, ph],
+          transform: { ...IDENTITY_TRANSFORM },
+        };
+        setLayers((ls) => [...ls, layer]);
+        setActiveLayer(id);
+        setSelectedLayerIds([id]);
+        setTool("move"); // so it can be positioned immediately
+        setImgVer((v) => v + 1);
+        URL.revokeObjectURL(url);
+      };
+      placed.src = dataUrl;
+    };
+    im.src = url;
+  };
+
+  // Flatten the whole visible composite (base + all layers, incl. imports) into a NEW base and
+  // re-upload it to the sidecar, so selections + AI generation now see the imported/edited
+  // pixels. This bakes every layer (a deliberate commit; undoable).
+  const flattenForAI = async () => {
+    if (!img || !composite) return;
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    // composite may carry alpha (decomposed holes); flatten onto the current base so we never
+    // introduce black holes when re-encoding to the RGB base.
+    const flat = document.createElement("canvas");
+    flat.width = W;
+    flat.height = H;
+    const fx = flat.getContext("2d")!;
+    if (decomposed) fx.drawImage(img, 0, 0, W, H);
+    fx.drawImage(composite, 0, 0);
+    const dataUrl = flat.toDataURL("image/png");
+    setGenStatus("busy");
+    try {
+      pushHistory();
+      const im = await new Promise<HTMLImageElement>((res, rej) => {
+        const i = new window.Image();
+        i.onload = () => res(i);
+        i.onerror = rej;
+        i.src = dataUrl;
+      });
+      setImg(im);
+      setLayers([]);
+      layerImgs.current.clear();
+      setActiveLayer(null);
+      setSelectedLayerIds([]);
+      setDecomposed(false);
+      setMask(new MaskBuffer(W, H));
+      cacheImgPx(im);
+      const tc = document.createElement("canvas");
+      const s = 80 / Math.max(W, H);
+      tc.width = Math.max(1, Math.round(W * s));
+      tc.height = Math.max(1, Math.round(H * s));
+      tc.getContext("2d")!.drawImage(im, 0, 0, tc.width, tc.height);
+      setBaseThumb(tc.toDataURL("image/png"));
+      const up = await loadImageToSidecar(await b64ToFile(dataUrl.split(",")[1]));
+      setImageId(up.id);
+      setBackend(up.backend);
+      setImgVer((v) => v + 1);
+      setGenStatus("idle");
+    } catch (e) {
+      console.error("flatten failed:", e);
+      setGenStatus("failed");
+    }
   };
 
   // Run a smart-select and replace the working mask with the result.
@@ -1633,6 +1755,9 @@ export function CanvasStage() {
         hasImage={!!img}
         onSave={saveProject}
         onOpenProject={openProject}
+        onImport={importImageAsLayer}
+        onFlatten={flattenForAI}
+        canFlatten={!!img && layers.length > 0}
         onAddAdjustment={addAdjustment}
         straighten={docTransform.straighten}
         onStraighten={(deg) => setDocTransform((tr) => ({ ...tr, straighten: deg }))}
@@ -1922,6 +2047,8 @@ export function CanvasStage() {
         status={genStatus}
         canGenerate={!!imageId && !!mask && !mask.isEmpty() && genStatus !== "busy" && genStatus !== "polling"}
         onGenerate={generateNow}
+        overlapsImport={selectionOverlapsImport}
+        onFlatten={flattenForAI}
         harmonize={harmonize}
         onHarmonize={setHarmonize}
         varK={varK}
@@ -1945,6 +2072,8 @@ function GenerateBar({
   status,
   canGenerate,
   onGenerate,
+  overlapsImport,
+  onFlatten,
   harmonize,
   onHarmonize,
   varK,
@@ -1960,6 +2089,8 @@ function GenerateBar({
   status: "idle" | "busy" | "polling" | "done" | "failed";
   canGenerate: boolean;
   onGenerate: () => void;
+  overlapsImport: boolean;
+  onFlatten: () => void;
   harmonize: HarmonizeOpts;
   onHarmonize: (h: HarmonizeOpts) => void;
   varK: number;
@@ -2000,6 +2131,29 @@ function GenerateBar({
         )}
         {cfg.loras.length > 0 && <span style={{ color: A }}>· {cfg.loras.length} LoRA</span>}
       </div>
+      {overlapsImport && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 11,
+            color: "#f2c078",
+            background: "#2a1e0b",
+            border: "1px solid #f2a33c55",
+            borderRadius: 6,
+            padding: "5px 9px",
+          }}
+        >
+          <span>⚠ Your selection overlaps an imported image the AI can't see yet.</span>
+          <button
+            onClick={onFlatten}
+            style={{ border: "none", background: A, color: "#1a160e", borderRadius: 5, padding: "3px 9px", cursor: "pointer", fontWeight: 700, fontSize: 11 }}
+          >
+            ⤵ Flatten for AI
+          </button>
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span style={{ width: 8, height: 8, borderRadius: 2, background: A, boxShadow: `0 0 6px ${A}` }} />
         <input
@@ -2114,6 +2268,9 @@ function FileBar({
   hasImage,
   onSave,
   onOpenProject,
+  onImport,
+  onFlatten,
+  canFlatten,
   onAddAdjustment,
   straighten,
   onStraighten,
@@ -2127,6 +2284,9 @@ function FileBar({
   hasImage: boolean;
   onSave: () => void;
   onOpenProject: (f: File) => void;
+  onImport: (f: File) => void;
+  onFlatten: () => void;
+  canFlatten: boolean;
   onAddAdjustment: () => void;
   straighten: number;
   onStraighten: (deg: number) => void;
@@ -2138,6 +2298,7 @@ function FileBar({
   onDecompose: (g: "simple" | "fine") => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const importRef = useRef<HTMLInputElement>(null);
   const [finishFace, setFinishFace] = useState(false);
   const btn: React.CSSProperties = {
     background: "#181c22",
@@ -2182,6 +2343,33 @@ function FileBar({
       </button>
       <button style={btn} disabled={!hasImage} onClick={onSave}>
         Save .neuclip
+      </button>
+      <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
+      <input
+        ref={importRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(e) => {
+          if (e.target.files?.[0]) onImport(e.target.files[0]);
+          e.currentTarget.value = "";
+        }}
+      />
+      <button
+        style={btn}
+        disabled={!hasImage}
+        onClick={() => importRef.current?.click()}
+        title="Import another image as a movable layer (collage). Flatten for AI to let the AI edit it."
+      >
+        + Import image
+      </button>
+      <button
+        style={{ ...btn, borderColor: "#f2a33c55", color: "#f2a33c" }}
+        disabled={!canFlatten}
+        onClick={onFlatten}
+        title="Bake all layers (incl. imported images) into the base so AI edits apply to them"
+      >
+        ⤵ Flatten for AI
       </button>
       <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
       <button style={btn} disabled={!hasImage} onClick={onAddAdjustment} title="Add adjustment layer">
