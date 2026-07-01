@@ -319,8 +319,17 @@ def refine(body: RefineIn) -> dict:
 
 
 @app.get("/models")
-def list_models() -> dict:
-    return {"models": registry.public_list()}
+def list_models(refresh: bool = False) -> dict:
+    """Curated static models + the latest image-to-image / i2i-LoRA models pulled live from
+    the WaveSpeed catalog (when a key is set). `?refresh=true` bypasses the 15-min cache."""
+    key = settings_store.get_secret("wavespeed_api_key")
+    result = registry.public_list(api_key=key, force=refresh)
+    return {
+        "models": result["models"],
+        "dynamic_error": result["dynamic_error"],
+        "dynamic_count": result["dynamic_count"],
+        "has_key": bool(key),
+    }
 
 
 @app.get("/loras")

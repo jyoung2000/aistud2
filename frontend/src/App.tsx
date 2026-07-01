@@ -4,18 +4,24 @@ import { waitForSidecar } from "./api/sidecar";
 import { StatusBar, type SidecarState } from "./panels/statusBar";
 import { InspectorPipeline } from "./panels/inspectorPipeline";
 import { SettingsModal } from "./panels/settingsModal";
+import { Onboarding, hasOnboarded } from "./panels/onboarding";
 import { CanvasStage } from "./canvas/canvasStage";
 
 export default function App() {
   const [state, setState] = useState<SidecarState>({ kind: "connecting" });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [onboardOpen, setOnboardOpen] = useState(false);
   const health = state.kind === "connected" ? state.health : null;
 
   useEffect(() => {
     let cancelled = false;
     waitForSidecar()
       .then((health) => {
-        if (!cancelled) setState({ kind: "connected", health });
+        if (!cancelled) {
+          setState({ kind: "connected", health });
+          // First run: show the onboarding walkthrough once the sidecar is up.
+          if (!hasOnboarded()) setOnboardOpen(true);
+        }
       })
       .catch((e) => {
         if (!cancelled) setState({ kind: "error", message: String(e?.message ?? e) });
@@ -78,7 +84,13 @@ export default function App() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         health={health}
+        onShowWalkthrough={() => {
+          setSettingsOpen(false);
+          setOnboardOpen(true);
+        }}
       />
+
+      <Onboarding open={onboardOpen} onClose={() => setOnboardOpen(false)} health={health} />
     </div>
   );
 }

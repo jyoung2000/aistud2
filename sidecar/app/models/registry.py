@@ -10,7 +10,8 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
-from app.models.adapters import flux_fill, ideogram_char, kontext, qwen_edit
+from app.models import catalog
+from app.models.adapters import flux_fill, generic, ideogram_char, kontext, qwen_edit
 
 
 @dataclass
@@ -74,8 +75,7 @@ def get(model_id: Optional[str]):
     return None
 
 
-def public_list() -> list:
-    """Frontend-facing shape (mirrors ModelRefCaps + flags)."""
+def _static_public() -> list:
     return [
         {
             "id": m.id,
@@ -90,9 +90,34 @@ def public_list() -> list:
             "confirmed_slug": m.confirmed_slug,
             "supports_lora": m.supports_lora,
             "max_loras": m.max_loras,
+            "dynamic": False,
         }
         for m in REGISTRY
     ]
+
+
+def public_list(api_key: Optional[str] = None, force: bool = False) -> dict:
+    """Frontend-facing catalog: the curated static models (confirmed slugs + hand-tuned
+    adapters) first, then the latest image-to-image + i2i-LoRA models pulled live from the
+    WaveSpeed catalog. Deduped by slug; static entries win. Returns
+    { models, dynamic_error, dynamic_count } so the UI can surface a "couldn't refresh" note.
+    """
+    static = _static_public()
+    seen = {m["slug"] for m in static}
+    seen.update(m["id"] for m in static)
+    dynamic_error = None
+    dynamic: list = []
+    if api_key is not None:
+        cat = catalog.fetch_catalog(api_key, force=force)
+        dynamic_error = cat.get("error")
+        for m in cat.get("models", []):
+            if m["slug"] in seen or m["id"] in seen:
+                continue
+            seen.add(m["slug"])
+            # Drop the heavy raw schema from the public payload (kept server-side for builds).
+            pub = {k: v for k, v in m.items() if k != "api_schema"}
+            dynamic.append(pub)
+    return {"models": static + dynamic, "dynamic_error": dynamic_error, "dynamic_count": len(dynamic)}
 
 
 def build_payload(
@@ -105,22 +130,38 @@ def build_payload(
     reference_role: Optional[str] = None,
     loras: Optional[list] = None,
 ) -> tuple:
-    """Return (slug, payload) for a model. Raises if unknown."""
+    """Return (slug, payload) for a model. Static models use their hand-written adapter;
+    models discovered live from the WaveSpeed catalog use the generic schema-driven adapter.
+    Raises if the model is unknown to both."""
     spec = get(model_id)
-    if spec is None:
-        raise KeyError(f"unknown model: {model_id}")
-    payload = spec.build(
-        crop_rgb=crop_rgb,
-        crop_mask=crop_mask,
-        prompt=prompt,
-        params=params,
-        reference_rgb=reference_rgb,
-        reference_role=reference_role,
-    )
+    if spec is not None:
+        payload = spec.build(
+            crop_rgb=crop_rgb,
+            crop_mask=crop_mask,
+            prompt=prompt,
+            params=params,
+            reference_rgb=reference_rgb,
+            reference_role=reference_role,
+        )
+        slug, supports_lora, max_loras = spec.slug, spec.supports_lora, spec.max_loras
+    else:
+        dyn = catalog.find(model_id)
+        if dyn is None:
+            raise KeyError(f"unknown model: {model_id}")
+        payload = generic.build_payload(
+            crop_rgb=crop_rgb,
+            crop_mask=crop_mask,
+            prompt=prompt,
+            params=params,
+            reference_rgb=reference_rgb,
+            reference_role=reference_role,
+            api_schema=dyn.get("api_schema"),
+        )
+        slug, supports_lora, max_loras = dyn["slug"], dyn.get("supports_lora", False), dyn.get("max_loras", 0)
     # LoRA stack — only attach for models that support it (machine-introspected cap wins).
-    if loras and spec.supports_lora:
-        capped = loras[: spec.max_loras]
+    if loras and supports_lora:
+        capped = loras[: max_loras]
         payload["loras"] = [
             {"path": l.get("ref"), "scale": float(l.get("weight", 1.0))} for l in capped if l.get("ref")
         ]
-    return spec.slug, payload
+    return slug, payload

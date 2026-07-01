@@ -7,6 +7,7 @@ import {
   type SecretStatus,
   type SettingsStatus,
 } from "../api/settings";
+import { loadModels, modelsMeta } from "../api/referenceModels";
 
 const AMBER = COLOR_GENERATION;
 
@@ -14,10 +15,12 @@ export function SettingsModal({
   open,
   onClose,
   health,
+  onShowWalkthrough,
 }: {
   open: boolean;
   onClose: () => void;
   health: HealthResponse | null;
+  onShowWalkthrough?: () => void;
 }) {
   const [status, setStatus] = useState<SettingsStatus | null>(null);
   const [wavespeed, setWavespeed] = useState("");
@@ -156,6 +159,38 @@ export function SettingsModal({
           </p>
         )}
 
+        {/* Live models */}
+        <div style={{ height: 1, background: "#23282f", margin: "16px 0" }} />
+        <div style={{ fontSize: 11, letterSpacing: 1, color: AMBER, fontWeight: 700 }}>
+          WAVESPEED MODELS
+        </div>
+        <ModelsInfo />
+
+        {/* Help */}
+        {onShowWalkthrough && (
+          <>
+            <div style={{ height: 1, background: "#23282f", margin: "16px 0" }} />
+            <div style={{ fontSize: 11, letterSpacing: 1, color: "#64748b", fontWeight: 700 }}>
+              HELP
+            </div>
+            <button
+              onClick={onShowWalkthrough}
+              style={{
+                marginTop: 8,
+                padding: "7px 14px",
+                borderRadius: 6,
+                border: "1px solid #2a2f37",
+                background: "transparent",
+                color: "#cbd5e1",
+                cursor: "pointer",
+                fontSize: 12,
+              }}
+            >
+              Show walkthrough
+            </button>
+          </>
+        )}
+
         {/* Device */}
         <div style={{ height: 1, background: "#23282f", margin: "16px 0" }} />
         <div style={{ fontSize: 11, letterSpacing: 1, color: "#64748b", fontWeight: 700 }}>
@@ -204,6 +239,55 @@ function KeyField({
           : "not set"}
       </span>
     </label>
+  );
+}
+
+function ModelsInfo() {
+  const [meta, setMeta] = useState(modelsMeta());
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    setBusy(true);
+    try {
+      await loadModels(true);
+      setMeta({ ...modelsMeta() });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.5 }}>
+      <p style={{ color: "#9aa4b2", margin: "0 0 8px" }}>
+        The latest image-to-image and image-to-image&nbsp;LoRA models are pulled live from your
+        WaveSpeed account (a WaveSpeed key is required). Curated models are always available.
+      </p>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <button
+          onClick={refresh}
+          disabled={busy}
+          style={{
+            padding: "6px 12px",
+            borderRadius: 6,
+            border: "1px solid #2a2f37",
+            background: "transparent",
+            color: "#cbd5e1",
+            cursor: busy ? "default" : "pointer",
+            fontSize: 12,
+            opacity: busy ? 0.6 : 1,
+          }}
+        >
+          {busy ? "Refreshing…" : "Refresh model list"}
+        </button>
+        <span style={{ fontSize: 11.5, color: meta.dynamicError ? "#e0b060" : "#7d8694" }}>
+          {!meta.hasKey
+            ? "no key set"
+            : meta.dynamicError
+              ? `error: ${meta.dynamicError}`
+              : `${meta.dynamicCount} live model${meta.dynamicCount === 1 ? "" : "s"} loaded`}
+        </span>
+      </div>
+    </div>
   );
 }
 

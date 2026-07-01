@@ -31,6 +31,24 @@ export interface ModelRefCaps {
   confirmed_slug?: boolean;
   supports_lora?: boolean;
   max_loras?: number;
+  /** True for models pulled live from the WaveSpeed catalog (vs. the curated static set). */
+  dynamic?: boolean;
+  /** Short model type/description surfaced by the live catalog. */
+  type?: string;
+  description?: string;
+}
+
+/** Metadata from the last /models fetch — lets the UI show "N live models" / refresh errors. */
+export interface ModelsMeta {
+  dynamicCount: number;
+  dynamicError: string | null;
+  hasKey: boolean;
+}
+
+let LAST_META: ModelsMeta = { dynamicCount: 0, dynamicError: null, hasKey: false };
+
+export function modelsMeta(): ModelsMeta {
+  return LAST_META;
 }
 
 /** Max models in a comparison set (shootout). Comparison is intentional spend. */
@@ -113,12 +131,22 @@ export function modelById(id: string): ModelRefCaps | undefined {
 }
 
 /** Load the real model registry from the sidecar; falls back to the stub on failure. */
-export async function loadModels(): Promise<ModelRefCaps[]> {
+export async function loadModels(force = false): Promise<ModelRefCaps[]> {
   try {
-    const res = await fetch(`${await baseUrl()}/models`);
+    const res = await fetch(`${await baseUrl()}/models${force ? "?refresh=true" : ""}`);
     if (!res.ok) throw new Error(`/models ${res.status}`);
-    const j = (await res.json()) as { models: ModelRefCaps[] };
+    const j = (await res.json()) as {
+      models: ModelRefCaps[];
+      dynamic_count?: number;
+      dynamic_error?: string | null;
+      has_key?: boolean;
+    };
     if (Array.isArray(j.models) && j.models.length) MODELS = j.models;
+    LAST_META = {
+      dynamicCount: j.dynamic_count ?? 0,
+      dynamicError: j.dynamic_error ?? null,
+      hasKey: !!j.has_key,
+    };
     return MODELS;
   } catch {
     return MODELS; // stub

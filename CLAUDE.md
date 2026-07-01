@@ -145,6 +145,28 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
   Resolve order per secret: config file → env var (`WAVESPEED_API_KEY`/`ANTHROPIC_API_KEY`)
   → unset (`sidecar/app/settings.py`). Frontend: `panels/settingsModal.tsx` (⚙ in header),
   `api/settings.ts`. The Settings screen also shows the compute device + a CPU/GPU note.
+- **`/models` (IMPLEMENTED — live catalog):** returns the **curated static models** (confirmed
+  slugs + hand-tuned adapters) PLUS the **latest image-to-image + image-to-image-LoRA models
+  pulled live from the WaveSpeed catalog** (`GET https://api.wavespeed.ai/api/v3/models`, Bearer
+  auth) — contract #6 is honored because slug + schema come FROM the card, not guessed.
+  `sidecar/app/models/catalog.py` filters by type/schema (input image → image output; excludes
+  video/audio/3d), detects LoRA support + `max_loras` from the model's own `api_schema`, caches
+  15 min (`?refresh=true` bypasses). Dynamic models carry `dynamic:true` + `api_schema`; the
+  schema-driven **generic adapter** (`adapters/generic.py`) builds their request, and
+  `wavespeed.submit` accepts full provider paths (`{provider}/{model}`) as well as bare
+  `wavespeed-ai` slugs. `/models` response: `{ models, dynamic_count, dynamic_error, has_key }`.
+  Never breaks on a catalog hiccup — falls back to the static set with an error string. Frontend
+  `api/referenceModels.ts` `loadModels(force?)` + `modelsMeta()`; ⚙ Settings shows a
+  "Refresh model list" + live count.
+
+## First-run onboarding (IMPLEMENTED)
+- `frontend/src/panels/onboarding.tsx` — a stepped overlay shown once on first launch (gated by
+  `localStorage` `neuclip.onboarded.v2`, mounted from `App.tsx` after the sidecar connects).
+  Steps: welcome → **API keys** (WaveSpeed + Anthropic, `Save & test connection` runs
+  `loadModels(true)` and reports the live-model count / error / device) → 5-card **UI walkthrough**
+  (open+auto-separate, select tools + cyan-ants/boolean-ops, amber inspector + crop-only send,
+  compare/shootout, layers + Move tool + export) → done. Re-openable via ⚙ Settings ▸ **Show
+  walkthrough**. Cyan=selection / amber=AI messaging is reinforced throughout.
 
 ## Sidecar <-> Tauri handshake (Phase 0, IMPLEMENTED)
 - Sidecar binds a port: tries `NEUCLIP_SIDECAR_PORT` (default 8756); on conflict it

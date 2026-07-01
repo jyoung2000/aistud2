@@ -18,10 +18,27 @@ BASE = "https://api.wavespeed.ai/api/v3"
 TIMEOUT = httpx.Timeout(60.0)
 
 
+def _model_url(slug: str) -> str:
+    """Build the submit URL. A bare slug (e.g. "qwen-image/edit-2511") is a wavespeed-ai
+    model; a slug that already carries a provider prefix (e.g. "alibaba/..." from the live
+    catalog) is used as the full path."""
+    s = slug.lstrip("/")
+    if "/" in s and s.split("/", 1)[0] in _PROVIDERS:
+        return f"{BASE}/{s}"
+    return f"{BASE}/wavespeed-ai/{s}"
+
+
+# Provider prefixes that appear as the first path segment of a WaveSpeed model_id.
+_PROVIDERS = {
+    "wavespeed-ai", "alibaba", "google", "bytedance", "kwaivgi", "luma", "nvidia", "bria",
+    "minimax", "black-forest-labs", "ideogram", "tencent", "stability-ai", "runway",
+}
+
+
 def submit(slug: str, payload: dict, api_key: str) -> str:
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     with httpx.Client(timeout=TIMEOUT) as c:
-        r = c.post(f"{BASE}/wavespeed-ai/{slug}", json=payload, headers=headers)
+        r = c.post(_model_url(slug), json=payload, headers=headers)
         r.raise_for_status()
         data = r.json().get("data", {})
         pid = data.get("id")
