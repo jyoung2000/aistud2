@@ -233,8 +233,22 @@ control signal — the **edited** rig, not the raw extraction, becomes the contr
   (`sidecar_port`), and **kills the child on window close** (no orphans).
 - `/health` returns `{ status, app, device, gpu_name, cuda, torch }`.
 
+## Magic Brush (scribble selection, `canvas/canvasStage.tsx` + `canvas/brush.ts`)
+Paint loosely over a subject → precise selection. Tool id `magic-brush` (rail 🖌 Brush; **W**,
+**Shift+W** cycles wand↔brush). Strokes are *hints*, not paint: **Brush** deposits positive hints,
+**Eraser** (or **Alt**) negative — into two image-space buffers, capsule-stamped along the drag
+(`brush.ts stampCapsule`). One shared **`brushSize`** (image px, 1–1000, `[` `]` = ±10%) drives both
+modes + the live cursor ring (`size×scale`). Three snap engines (options `BrushBar`): **AI** (default)
+= sampled hints → SAM 2 point prompts (`smartSelect`, reuses the cached embedding; throttled one-in-
+flight; falls back to Local on failure), **Local** = offline edge-bounded region-grow (`localGrow`,
+gradient barrier + negative hints exclude), **Off** = raw paint. Snap runs on stroke-end → cyan
+preview + hint overlay. **Enter** commits (BiRefNet "Refine edges" toggle on by default) → the shared
+`commitMask`; **Esc** clears. Commit reuses the one shared AA/feather/boolean pipeline (invariant #3).
+Pure ops esbuild-validated. Sidecar SAM is encode-once/query-many already (`select_sam.set_image`).
+
 ## Keyboard shortcuts (Photoshop-aligned, `canvas/canvasStage.tsx`)
-Tools: **V** Move · **M** Smart-select · **Shift+L** cycle Lasso (free/poly/magnetic) · **H** Hand
+Tools: **V** Move · **M** Smart-select · **W** Magic Brush (Shift+W ↔ Magic Wand) · **Shift+L**
+cycle Lasso (free/poly/magnetic) · **H** Hand
 (pan) · Space-drag / middle-drag = temporary pan. Lasso/pen: **Enter**/double-click/click-origin
 close · **Backspace** drop last anchor · **Esc** cancel · **`[` `]`** magnetic Width.
 View: **Cmd/Ctrl +/−** zoom · **Cmd/Ctrl+0** fit · **Cmd/Ctrl+1** 100% · wheel = zoom-to-cursor.

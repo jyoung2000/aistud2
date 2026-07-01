@@ -10,6 +10,7 @@ import {
 } from "./coords";
 import { MaskBuffer, opFromModifiers, type BoolOp } from "./maskBuffer";
 import { rasterizeCoverage, featherCoverage, dist, constrain45, flatten, appendFreehand } from "./lasso";
+import { stampCapsule, sampleHintPoints, gradientMag, localGrow, rawSnap } from "./brush";
 import { LiveWire } from "./livewire";
 import {
   emptyPath,
@@ -60,7 +61,9 @@ import { b64ToFile, outpaint, finishImage, fillBehind } from "../api/generate";
 import { getGenConfig, useGenConfig } from "../state/genConfig";
 import { LayersPanel } from "../panels/layersPanel";
 
-type Tool = "select" | "lasso" | "pen" | "wand" | "move" | "hand";
+type Tool = "select" | "lasso" | "pen" | "wand" | "magic-brush" | "move" | "hand";
+type BrushMode = "brush" | "eraser";
+type BrushSnap = "ai" | "local" | "off";
 type LassoMode = "free" | "poly" | "magnetic";
 
 interface ImgPx {
@@ -85,6 +88,25 @@ function maskToCanvas(mask: MaskBuffer): HTMLCanvasElement {
   const rgba = mask.toRGBA([34, 211, 238], 96); // cyan
   const id = ctx.createImageData(mask.width, mask.height);
   id.data.set(rgba);
+  ctx.putImageData(id, 0, 0);
+  return c;
+}
+
+/** Faint overlay of the magic-brush scribble hints: cyan = positive, warm red = negative. */
+function hintsToCanvas(pos: Uint8Array, neg: Uint8Array | null, w: number, h: number): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d")!;
+  const id = ctx.createImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    const o = i * 4;
+    if (neg && neg[i]) {
+      id.data[o] = 245; id.data[o + 1] = 110; id.data[o + 2] = 110; id.data[o + 3] = 120;
+    } else if (pos[i]) {
+      id.data[o] = 34; id.data[o + 1] = 211; id.data[o + 2] = 238; id.data[o + 3] = 90;
+    }
+  }
   ctx.putImageData(id, 0, 0);
   return c;
 }
@@ -161,6 +183,21 @@ export function CanvasStage() {
   // shared selection-edge options (all lasso/wand/brush tools commit through commitMask)
   const [antialias, setAntialias] = useState(true);
   const [feather, setFeather] = useState(0); // px (Gaussian radius of the selection channel)
+
+  // --- magic brush ---
+  const [brushSize, setBrushSize] = useState(40); // image px, SHARED by brush + eraser
+  const [brushMode, setBrushMode] = useState<BrushMode>("brush");
+  const [brushSnap, setBrushSnap] = useState<BrushSnap>("ai");
+  const [brushRefine, setBrushRefine] = useState(true);
+  const posHints = useRef<Uint8Array | null>(null); // image-space positive scribble buffer
+  const negHints = useRef<Uint8Array | null>(null); // negative scribble buffer
+  const [hintVer, setHintVer] = useState(0); // bump to redraw the hint overlay
+  const [brushPreview, setBrushPreview] = useState<MaskBuffer | null>(null);
+  const brushOp = useRef<BoolOp>("replace");
+  const brushErasing = useRef(false);
+  const brushBusy = useRef(false);
+  const brushLast = useRef<Pt | null>(null);
+  const gradCache = useRef<{ id: string; g: Uint8Array } | null>(null);
   const [semanticText, setSemanticText] = useState("");
   const [namedSel, setNamedSel] = useState<{ name: string; data: Uint8Array }[]>([]);
   const [selNote, setSelNote] = useState<string | null>(null);
@@ -383,6 +420,12 @@ export function CanvasStage() {
         setTool("select");
         return;
       }
+      if (!e.metaKey && !e.ctrlKey && (e.key === "w" || e.key === "W")) {
+        // W = Magic Brush; Shift+W cycles Magic Wand <-> Magic Brush (PS grouping)
+        if (e.shiftKey) setTool((cur) => (cur === "wand" ? "magic-brush" : "wand"));
+        else setTool("magic-brush");
+        return;
+      }
       if (tool === "move") {
         if ((e.key === "Delete" || e.key === "Backspace") && selectedLayerIds.length) {
           e.preventDefault();
@@ -406,6 +449,17 @@ export function CanvasStage() {
           w.windowRadius = Math.max(60, Math.min(600, w.windowRadius + (e.key === "]" ? 40 : -40)));
           if (lassoPts.length) w.setSeed(lassoPts[lassoPts.length - 1]);
         }
+      } else if (tool === "magic-brush") {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void commitBrush();
+        } else if (e.key === "Escape") {
+          cancelBrush();
+        } else if (e.key === "[") {
+          setBrushSize((s) => Math.max(1, Math.round(s * 0.9)));
+        } else if (e.key === "]") {
+          setBrushSize((s) => Math.min(1000, Math.max(s + 1, Math.round(s * 1.1))));
+        }
       } else if (tool === "pen") {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -423,7 +477,7 @@ export function CanvasStage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, lassoPts, lassoMode, pen, penSel, mask, selectedLayerIds]);
+  }, [tool, lassoPts, lassoMode, pen, penSel, mask, selectedLayerIds, brushPreview, brushRefine]);
 
   // undo/redo keyboard (fresh closures via deps; zoom/pan are NOT on the stack)
   useEffect(() => {
@@ -450,6 +504,15 @@ export function CanvasStage() {
     [mask]
   );
   const loops = useMemo(() => (mask ? mask.outline() : []), [mask, maskCanvas]);
+  const brushPreviewCanvas = useMemo(
+    () => (brushPreview && !brushPreview.isEmpty() ? maskToCanvas(brushPreview) : null),
+    [brushPreview]
+  );
+  const hintCanvas = useMemo(() => {
+    if (tool !== "magic-brush" || !mask || !posHints.current) return null;
+    return hintsToCanvas(posHints.current, negHints.current, mask.width, mask.height);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hintVer, tool, mask]);
 
   const lassoDraw: Pt[] =
     tool === "lasso" && lassoPts.length
@@ -721,7 +784,19 @@ export function CanvasStage() {
       setPanning(true);
       return;
     }
-    if (tool === "lasso" && lassoMode === "free") {
+    if (tool === "magic-brush" && mask) {
+      const ip = screenToImage(p, t);
+      if (!posHints.current) {
+        posHints.current = new Uint8Array(mask.width * mask.height);
+        negHints.current = new Uint8Array(mask.width * mask.height);
+        brushOp.current = e.evt.shiftKey ? "add" : "replace"; // final combine (mode buttons/Shift)
+      }
+      brushErasing.current = brushMode === "eraser" || e.evt.altKey; // Alt = temp erase
+      const buf = brushErasing.current ? negHints.current! : posHints.current!;
+      stampBrush(buf, ip, ip);
+      brushLast.current = ip;
+      setHintVer((v) => v + 1);
+    } else if (tool === "lasso" && lassoMode === "free") {
       // freehand: drag samples points; release closes
       const ip = screenToImage(p, t);
       lassoOp.current = opFromModifiers(e.evt.shiftKey, e.evt.altKey);
@@ -754,6 +829,15 @@ export function CanvasStage() {
       penMove(ip);
       return;
     }
+    if (tool === "magic-brush" && ip && drag.current && !drag.current.pan && brushLast.current) {
+      const buf = brushErasing.current ? negHints.current! : posHints.current!;
+      if (buf) {
+        stampBrush(buf, brushLast.current, ip);
+        brushLast.current = ip;
+        setHintVer((v) => v + 1);
+      }
+      return;
+    }
     if (tool === "lasso" && ip) {
       // Polygonal: Shift shows the rubber-band already snapped to 45°, matching what a click
       // will place (PS parity). Otherwise the raw cursor.
@@ -783,6 +867,11 @@ export function CanvasStage() {
     }
     if (tool === "move") {
       moveEnd(p ? screenToImage(p, t) : null);
+      return;
+    }
+    if (tool === "magic-brush") {
+      brushLast.current = null;
+      if (d && !d.pan) void runBrushSnap();
       return;
     }
     if (!d || d.pan || !p || !mask || !img) return;
@@ -837,6 +926,85 @@ export function CanvasStage() {
     const next = mask.clone();
     next.apply(cov, op);
     setMask(next);
+  };
+
+  // --- magic brush ---
+  const stampBrush = (buf: Uint8Array, a: Pt, b: Pt) => {
+    if (!mask) return;
+    stampCapsule(buf, mask.width, mask.height, a, b, brushSize / 2);
+  };
+
+  // Turn the accumulated hints into a snapped selection preview via the active engine.
+  const runBrushSnap = async () => {
+    if (!mask) return;
+    const pos = posHints.current;
+    const neg = negHints.current;
+    if (!pos) return;
+    const W = mask.width;
+    const H = mask.height;
+    const hasPos = pos.some((v) => v);
+    if (!hasPos) {
+      setBrushPreview(null);
+      return;
+    }
+
+    if (brushSnap === "off") {
+      setBrushPreview(new MaskBuffer(W, H, rawSnap(pos, neg!)));
+      return;
+    }
+    if (brushSnap === "ai" && imageId) {
+      if (brushBusy.current) return; // throttle to one query in flight
+      brushBusy.current = true;
+      try {
+        const pts = [
+          ...sampleHintPoints(pos, W, 24).map((p) => ({ x: p.x, y: p.y, label: 1 as const })),
+          ...sampleHintPoints(neg!, W, 16).map((p) => ({ x: p.x, y: p.y, label: 0 as const })),
+        ];
+        const r = await smartSelect(imageId, pts, null);
+        setBrushPreview(new MaskBuffer(r.width, r.height, r.data));
+        setSelNote(null);
+        return;
+      } catch (e) {
+        console.warn("AI snap failed, using local:", e);
+        setSelNote("AI snap unavailable — using local");
+      } finally {
+        brushBusy.current = false;
+      }
+    }
+    // local (or AI fallback)
+    const px = imgPx.current;
+    if (px && px.w === W && px.h === H) {
+      if (!gradCache.current || gradCache.current.id !== imageId) {
+        gradCache.current = { id: imageId ?? "", g: gradientMag(px.data, W, H) };
+      }
+      setBrushPreview(new MaskBuffer(W, H, Uint8Array.from(localGrow(px.data, gradCache.current.g, W, H, pos, neg!))));
+    } else {
+      setBrushPreview(new MaskBuffer(W, H, rawSnap(pos, neg!)));
+    }
+  };
+
+  const commitBrush = async () => {
+    if (!brushPreview || !mask) {
+      cancelBrush();
+      return;
+    }
+    let data = new Uint8Array(brushPreview.data);
+    if (brushRefine && imageId) {
+      try {
+        data = new Uint8Array(await refineMask(imageId, data, mask.width, mask.height)); // BiRefNet edge crisp-up
+      } catch (e) {
+        console.warn("refine on commit failed:", e);
+      }
+    }
+    commitMask(data, brushOp.current);
+    cancelBrush();
+  };
+  const cancelBrush = () => {
+    posHints.current = null;
+    negHints.current = null;
+    brushLast.current = null;
+    setBrushPreview(null);
+    setHintVer((v) => v + 1);
   };
 
   // --- lasso ---
@@ -1966,6 +2134,21 @@ export function CanvasStage() {
         onFit={() => img && setT(fitTransform(img.naturalWidth, img.naturalHeight, vp.w, vp.h))}
         onActual={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1 / c.scale))}
       />
+      {img && tool === "magic-brush" && (
+        <BrushBar
+          size={brushSize}
+          onSize={setBrushSize}
+          mode={brushMode}
+          onMode={setBrushMode}
+          snap={brushSnap}
+          onSnap={setBrushSnap}
+          refine={brushRefine}
+          onRefine={setBrushRefine}
+          hasPreview={!!brushPreview}
+          onCommit={() => void commitBrush()}
+          onClear={cancelBrush}
+        />
+      )}
       {img && (
         <SelectBar
           tool={tool}
@@ -2077,6 +2260,23 @@ export function CanvasStage() {
               );
             })()}
             {viewMode === "normal" && maskCanvas && <KImage image={maskCanvas} x={0} y={0} listening={false} />}
+            {viewMode === "normal" && tool === "magic-brush" && hintCanvas && (
+              <KImage image={hintCanvas} x={0} y={0} listening={false} opacity={0.9} />
+            )}
+            {viewMode === "normal" && tool === "magic-brush" && brushPreviewCanvas && (
+              <KImage image={brushPreviewCanvas} x={0} y={0} listening={false} />
+            )}
+            {tool === "magic-brush" && cursor && !panning && (
+              <Circle
+                x={cursor.x}
+                y={cursor.y}
+                radius={brushSize / 2}
+                stroke={brushMode === "eraser" ? "#f26e6e" : "#22d3ee"}
+                strokeWidth={1.5 / t.scale}
+                dash={[4 / t.scale, 3 / t.scale]}
+                listening={false}
+              />
+            )}
             {loops.map((loop, i) => (
               <Line
                 key={i}
@@ -2723,6 +2923,67 @@ function SelectBar({
   );
 }
 
+function BrushBar({
+  size,
+  onSize,
+  mode,
+  onMode,
+  snap,
+  onSnap,
+  refine,
+  onRefine,
+  hasPreview,
+  onCommit,
+  onClear,
+}: {
+  size: number;
+  onSize: (v: number) => void;
+  mode: BrushMode;
+  onMode: (m: BrushMode) => void;
+  snap: BrushSnap;
+  onSnap: (s: BrushSnap) => void;
+  refine: boolean;
+  onRefine: (v: boolean) => void;
+  hasPreview: boolean;
+  onCommit: () => void;
+  onClear: () => void;
+}) {
+  const C = "#22d3ee";
+  const bar: React.CSSProperties = {
+    height: 34, display: "flex", alignItems: "center", gap: 8, padding: "0 10px",
+    borderBottom: "1px solid #20242b", background: "#0c1216", font: "11.5px ui-monospace, monospace", color: "#9fb4c4", flexWrap: "wrap",
+  };
+  const btn: React.CSSProperties = { background: "#12181d", color: "#cbd5e1", border: "1px solid #233037", borderRadius: 5, padding: "3px 8px", fontSize: 11, cursor: "pointer" };
+  const seg = (active: boolean): React.CSSProperties => ({ ...btn, background: active ? C : "#12181d", color: active ? "#08222b" : "#cbd5e1", fontWeight: active ? 700 : 400 });
+  return (
+    <div style={bar}>
+      <span style={{ color: C, fontWeight: 700 }}>🖌 Magic Brush</span>
+      <span style={{ width: 1, height: 16, background: "#233037" }} />
+      <span>Size</span>
+      <input type="range" min={1} max={300} value={Math.min(300, size)} onChange={(e) => onSize(Number(e.target.value))} style={{ width: 110, accentColor: C }} />
+      <input type="number" min={1} max={1000} value={size} onChange={(e) => onSize(Math.max(1, Math.min(1000, Number(e.target.value) || 1)))} style={{ width: 52, background: "#0d0f12", color: "#e2e8f0", border: "1px solid #233037", borderRadius: 5, padding: "2px 4px", fontSize: 11 }} />
+      <span style={{ color: "#5c6473" }}>[ ]</span>
+      <span style={{ width: 1, height: 16, background: "#233037" }} />
+      <button style={seg(mode === "brush")} onClick={() => onMode("brush")} title="Brush — add (paint the subject)">Brush +</button>
+      <button style={seg(mode === "eraser")} onClick={() => onMode("eraser")} title="Eraser — subtract (Alt does this temporarily)">Eraser −</button>
+      <span style={{ width: 1, height: 16, background: "#233037" }} />
+      <span>Snap</span>
+      {(["ai", "local", "off"] as BrushSnap[]).map((s) => (
+        <button key={s} style={seg(snap === s)} onClick={() => onSnap(s)} title={s === "ai" ? "AI (SAM 2) — snaps to the subject" : s === "local" ? "Local edge-grow (offline)" : "Off — raw paint"}>
+          {s === "ai" ? "AI" : s === "local" ? "Local" : "Off"}
+        </button>
+      ))}
+      <label style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer" }} title="Refine edges (BiRefNet) on commit">
+        <input type="checkbox" checked={refine} onChange={(e) => onRefine(e.target.checked)} style={{ accentColor: C }} />
+        Refine edges
+      </label>
+      <span style={{ width: 1, height: 16, background: "#233037" }} />
+      <button style={{ ...seg(false), color: hasPreview ? "#08222b" : "#5c6473", background: hasPreview ? C : "#12181d", fontWeight: 700 }} disabled={!hasPreview} onClick={onCommit} title="Commit selection (Enter)">Commit ⏎</button>
+      <button style={btn} disabled={!hasPreview} onClick={onClear} title="Clear hints + preview (Esc)">Clear</button>
+    </div>
+  );
+}
+
 function ZoomBar({
   zoom,
   cursor,
@@ -2867,6 +3128,13 @@ function ZoomBar({
         title="Manual pen — click=corner, drag=curve, Alt-click=toggle smooth, Enter commits"
       >
         ✎ Pen
+      </button>
+      <button
+        style={toolBtn(tool === "magic-brush")}
+        onClick={() => onTool("magic-brush")}
+        title="Magic Brush — paint to select; snaps to the subject (W; Shift+W ↔ wand)"
+      >
+        🖌 Brush
       </button>
       <button style={toolBtn(tool === "hand")} onClick={() => onTool("hand")} title="Hand — pan (H, or hold Space)">
         ✋ Hand
