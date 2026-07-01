@@ -324,9 +324,13 @@ function KeysStep({ health }: { health: HealthResponse | null }) {
         </p>
       )}
 
-      <p style={{ fontSize: 11, color: "#6b7280", marginTop: 14, lineHeight: 1.5 }}>
+      <p style={{ fontSize: 11, color: onGpu || !health?.gpu_present ? "#6b7280" : "#e0b060", marginTop: 14, lineHeight: 1.5 }}>
         Compute: <b style={{ color: onGpu ? "#34d399" : "#cbd5e1" }}>{onGpu ? health?.gpu_name : "CPU"}</b>
-        {onGpu ? " — GPU ready." : " — running on CPU. Launch via “Open Neuclip Studio” with CUDA PyTorch to use an NVIDIA GPU."}
+        {onGpu
+          ? " — GPU ready."
+          : health?.gpu_present
+            ? " — NVIDIA GPU detected but this is the CPU build. Download the GPU build (“Neuclip Studio GPU”) and double-click it to activate CUDA — no install."
+            : " — running on CPU. The GPU build activates CUDA on double-click on NVIDIA machines."}
       </p>
     </div>
   );

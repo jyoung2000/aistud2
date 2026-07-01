@@ -10,6 +10,7 @@ export interface HealthResponse {
   cuda: boolean;
   torch: boolean;
   torch_version: string | null;
+  gpu_present?: boolean;
 }
 
 function inTauri(): boolean {

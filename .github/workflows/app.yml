@@ -83,3 +83,49 @@ jobs:
           files: ${{ matrix.asset }}.zip
           draft: true
           name: "Neuclip Studio ${{ github.ref_name }}"
+
+  # GPU build: Windows exe with CUDA PyTorch bundled — double-click activates the NVIDIA GPU,
+  # no install. Large (~4-5 GB) and shipped as a folder (onedir) so launch stays fast.
+  build-gpu-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build frontend
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+        working-directory: frontend
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build GPU app (CUDA torch bundled)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r sidecar/requirements.txt pyinstaller
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+          python sidecar/build_app.py --gpu
+
+      - name: Package (Windows GPU folder)
+        run: |
+          Compress-Archive -Path "sidecar/dist/Neuclip Studio GPU" -DestinationPath "Neuclip-Studio-Windows-GPU.zip"
+
+      - name: Upload GPU build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Neuclip-Studio-Windows-GPU
+          path: Neuclip-Studio-Windows-GPU.zip
+
+      - name: Attach to Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Neuclip-Studio-Windows-GPU.zip
+          draft: true
+          name: "Neuclip Studio ${{ github.ref_name }}"

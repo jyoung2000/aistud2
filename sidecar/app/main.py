@@ -57,6 +57,7 @@ def health() -> dict:
         "cuda": d["cuda"],
         "torch": d["torch"],
         "torch_version": d["torch_version"],
+        "gpu_present": d["gpu_present"],
     }
 
 

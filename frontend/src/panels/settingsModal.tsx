@@ -303,11 +303,18 @@ function DeviceInfo({ health }: { health: HealthResponse | null }) {
         </b>
         {health.torch_version ? ` · torch ${health.torch_version}` : " · torch not installed"}
       </div>
-      {!onGpu && (
-        <p style={{ fontSize: 11, color: "#9aa4b2", marginTop: 6 }}>
-          To use your NVIDIA GPU, run the app via <b>Open Neuclip Studio</b> with CUDA
-          PyTorch installed (see the project README). GPU-accelerated select/generate arrive
-          in later build phases; the standalone <code>.exe</code> ships CPU-only.
+      {!onGpu && health.gpu_present && (
+        <p style={{ fontSize: 11, color: "#e0b060", marginTop: 6, lineHeight: 1.5 }}>
+          An NVIDIA GPU was detected but this is the <b>CPU build</b>. Download the{" "}
+          <b>GPU build</b> (<code>Neuclip Studio GPU</code>) and double-click it — CUDA activates
+          automatically, no install. Alternatively, launch via <b>Open Neuclip Studio</b>.
+        </p>
+      )}
+      {!onGpu && !health.gpu_present && (
+        <p style={{ fontSize: 11, color: "#9aa4b2", marginTop: 6, lineHeight: 1.5 }}>
+          No NVIDIA GPU detected — running on CPU. On an NVIDIA machine, the <b>GPU build</b> of
+          the app uses CUDA on double-click (no install); the small standalone <code>.exe</code>{" "}
+          is CPU-only.
         </p>
       )}
     </div>

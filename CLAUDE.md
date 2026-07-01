@@ -131,6 +131,15 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
   workflows/app.yml` builds Win/macOS(arm+intel)/Linux on tag push → draft Release. The
   frontend uses same-origin requests in production (`api/sidecar.ts` `baseUrl()` returns
   "" unless Tauri or vite-dev).
+- **GPU build (NVIDIA — CUDA on double-click):** `build_app.py --gpu` bundles CUDA PyTorch so
+  the double-clicked app uses the GPU with no install/first-run download. It's `--onedir` (a
+  ~4–5 GB folder — an onefile would re-extract gigabytes to temp each launch) and `--collect-all`
+  torch/torchvision + the `nvidia-*` CUDA runtime wheels; guarded by `_verify_cuda_torch()`
+  (refuses to build against CPU-only torch). Artifact: `Neuclip Studio GPU/`. CI job
+  `build-gpu-windows` in `app.yml` installs the cu124 wheel then builds it →
+  `Neuclip-Studio-Windows-GPU.zip`. Torch-free `app/gpu_probe.py` (nvidia-smi / driver-lib) feeds
+  `device.detect_device()` a `gpu_present` flag so the small CPU build detects an idle NVIDIA GPU
+  and tells the user (Settings + onboarding) to grab the GPU build. `/health` exposes `gpu_present`.
 - **Polished native (optional, later):** `tauri build` → `.msi`/`.dmg`/AppImage via
   `.github/workflows/release.yml` (manual dispatch — compiles Rust). The native shell uses
   the externalBin sidecar + `sidecar_port` handshake.
