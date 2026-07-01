@@ -11,7 +11,9 @@ import {
   BODY_LIMBS,
   BODY_NAMES,
   LIMB_COLORS,
+  adjustLimbDepth,
   boneKey,
+  boneRestLengths,
   bodyIndex,
   clonePose,
   figureCenter,
@@ -25,6 +27,7 @@ import {
   rgb,
   setGroupVisible,
   setKeypointVisible,
+  solveBoneLengths,
   updateTransform,
   type Figure,
   type KeypointGroup,
@@ -73,6 +76,9 @@ export function PoseEditor({
   const [selected, setSelected] = useState<string | null>(null);
 
   const [symmetry, setSymmetry] = useState(false);
+  const [boneLock, setBoneLock] = useState(false);
+  const [onion, setOnion] = useState(false);
+  const restRef = useRef<Record<string, number> | null>(null);
 
   const dragRef = useRef<
     | { kind: "pan"; startView: ViewTransform; sx: number; sy: number }
@@ -216,9 +222,14 @@ export function PoseEditor({
     ctx.lineWidth = 1;
     ctx.strokeRect(tl.x + 0.5, tl.y + 0.5, width * view.scale, height * view.scale);
 
+    // onion skin: the ORIGINAL extracted pose, faint, under the edited rig
+    if (onion) {
+      for (const fig of initialPose.figures) drawOnion(ctx, fig, view);
+    }
+
     // rig
     for (const fig of pose.figures) drawFigure(ctx, fig, view, fig.id === activeFig, selected);
-  }, [pose, view, vp, ghost, imgReady, width, height, activeFig, selected]);
+  }, [pose, view, vp, ghost, imgReady, width, height, activeFig, selected, onion, initialPose]);
 
   // --- pointer handlers -----------------------------------------------------
   const onWheel = (e: React.WheelEvent) => {
@@ -244,6 +255,8 @@ export function PoseEditor({
       setActiveFig(hit.figId);
       setSelected(hit.id);
       dragSnapRef.current = clonePose(pose); // recorded on drag end if changed
+      const fig = pose.figures.find((f) => f.id === hit.figId);
+      restRef.current = boneLock && fig ? boneRestLengths(fig) : null;
       dragRef.current = { kind: "joint", id: hit.id, figId: hit.figId };
     } else {
       setSelected(null);
@@ -266,6 +279,7 @@ export function PoseEditor({
       const img = screenToImage({ x: sx, y: sy }, view);
       setPose((p) => {
         let next = moveKeypointRaw(p, d.figId, d.id, img.x, img.y, width, height);
+        const pinned = [d.id];
         if (symmetry) {
           const fig = next.figures.find((f) => f.id === d.figId);
           const partner = fig ? mirrorPartnerId(fig, d.id) : null;
@@ -273,7 +287,15 @@ export function PoseEditor({
             const c = figureCenter(fig);
             const moved = fig.keypoints.find((k) => k.id === d.id)!;
             next = moveKeypointRaw(next, d.figId, partner, 2 * c.x - moved.x, moved.y, width, height);
+            pinned.push(partner);
           }
+        }
+        // bone-length lock: relax the rest of the rig to keep limb lengths (dragged joint +
+        // torso anchor stay pinned).
+        if (restRef.current) {
+          const neck = next.figures.find((f) => f.id === d.figId)?.keypoints.find((k) => k.id.endsWith(":body:1"));
+          if (neck && neck.id !== d.id) pinned.push(neck.id);
+          next = solveBoneLengths(next, d.figId, restRef.current, pinned, width, height);
         }
         return next;
       });
@@ -295,6 +317,7 @@ export function PoseEditor({
       });
     }
     dragSnapRef.current = null;
+    restRef.current = null;
     dragRef.current = null;
   };
 
@@ -435,14 +458,21 @@ export function PoseEditor({
             figure={activeFigure ?? null}
             selected={selectedKp}
             symmetry={symmetry}
+            boneLock={boneLock}
+            onion={onion}
             canUndo={undoRef.current.length > 0}
             canRedo={redoRef.current.length > 0}
             onUndo={undo}
             onRedo={redo}
             onSetSymmetry={setSymmetry}
+            onSetBoneLock={setBoneLock}
+            onSetOnion={setOnion}
             onToggleGroup={(g, vis) => activeFigure && commit((p) => setGroupVisible(p, activeFigure.id, g, vis))}
             onTransform={(patch) => activeFigure && commit((p) => updateTransform(p, activeFigure.id, patch))}
             onMirror={() => activeFigure && commit((p) => mirrorFigure(p, activeFigure.id))}
+            onDepth={(dir) =>
+              selectedKp && activeFigure && commit((p) => adjustLimbDepth(p, activeFigure.id, selectedKp.id, dir))
+            }
             onDeleteJoint={() =>
               selectedKp && activeFigure && commit((p) => setKeypointVisible(p, activeFigure.id, selectedKp.id, false))
             }
@@ -458,28 +488,38 @@ function PoseInspector({
   figure,
   selected,
   symmetry,
+  boneLock,
+  onion,
   canUndo,
   canRedo,
   onUndo,
   onRedo,
   onSetSymmetry,
+  onSetBoneLock,
+  onSetOnion,
   onToggleGroup,
   onTransform,
   onMirror,
+  onDepth,
   onDeleteJoint,
   onRestoreJoint,
 }: {
   figure: Figure | null;
   selected: { id: string; x: number; y: number; confidence: number; visible: boolean } | null;
   symmetry: boolean;
+  boneLock: boolean;
+  onion: boolean;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
   onSetSymmetry: (v: boolean) => void;
+  onSetBoneLock: (v: boolean) => void;
+  onSetOnion: (v: boolean) => void;
   onToggleGroup: (g: KeypointGroup, visible: boolean) => void;
   onTransform: (patch: { scale?: number; rotation?: number }) => void;
   onMirror: () => void;
+  onDepth: (dir: 1 | -1) => void;
   onDeleteJoint: () => void;
   onRestoreJoint: (id: string) => void;
 }) {
@@ -510,11 +550,32 @@ function PoseInspector({
             {selected.confidence < 0.35 ? " — verify" : ""}
           </div>
           <div style={{ color: "#5c6473", marginTop: 2 }}>arrow keys nudge · Shift = ×10 · Del hides</div>
+          <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center" }}>
+            <span style={{ fontSize: 10, color: "#5c6473" }}>depth</span>
+            <button style={miniBtn} onClick={() => onDepth(1)} title="Bring this joint's limbs forward">▲ forward</button>
+            <button style={miniBtn} onClick={() => onDepth(-1)} title="Send this joint's limbs back">▼ back</button>
+          </div>
           <button style={{ ...miniBtn, marginTop: 6, color: "#e5687a" }} onClick={onDeleteJoint}>Hide joint</button>
         </div>
       ) : (
         <div style={{ fontSize: 11, color: "#5c6473" }}>Click a joint to inspect / edit.</div>
       )}
+
+      <SectionLabel>ACCURACY</SectionLabel>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 11, color: "#cbd5e1" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input type="checkbox" checked={boneLock} onChange={(e) => onSetBoneLock(e.target.checked)} />
+          Bone-length lock (IK-lite)
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input type="checkbox" checked={onion} onChange={(e) => onSetOnion(e.target.checked)} />
+          Onion-skin (show original pose)
+        </label>
+        <div style={{ fontSize: 10, color: "#5c6473", lineHeight: 1.4 }}>
+          2D skeletons lose depth — use forward/back on a joint so an arm meant to be behind the
+          torso reads correctly in the control image.
+        </div>
+      </div>
 
       <SectionLabel>GROUPS</SectionLabel>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -719,6 +780,27 @@ function drawFigure(
     }
     ctx.globalAlpha = 1;
   }
+}
+
+function drawOnion(ctx: CanvasRenderingContext2D, fig: Figure, view: ViewTransform) {
+  const by = new Map(fig.keypoints.map((k) => [k.id, k]));
+  ctx.save();
+  ctx.globalAlpha = 0.28;
+  ctx.strokeStyle = "#8aa0b8";
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  for (const [aId, bId] of fig.bones) {
+    const ka = by.get(aId);
+    const kb = by.get(bId);
+    if (!ka || !kb || !ka.visible || !kb.visible) continue;
+    const a = imageToScreen(keypointPos(fig, ka), view);
+    const b = imageToScreen(keypointPos(fig, kb), view);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 // --- styles -----------------------------------------------------------------

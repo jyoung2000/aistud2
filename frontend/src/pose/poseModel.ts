@@ -237,6 +237,75 @@ export function mirrorFigure(p: Pose, figId: string): Pose {
   return next;
 }
 
+/** Rest lengths of every bone in a figure (raw image-space distance), keyed `${a}|${b}`. */
+export function boneRestLengths(fig: Figure): Record<string, number> {
+  const by = new Map(fig.keypoints.map((k) => [k.id, k]));
+  const out: Record<string, number> = {};
+  for (const [a, b] of fig.bones) {
+    const ka = by.get(a);
+    const kb = by.get(b);
+    if (ka && kb) out[boneKey(a, b)] = Math.hypot(ka.x - kb.x, ka.y - kb.y);
+  }
+  return out;
+}
+
+/** IK-lite: position-based distance solve so bones hold their rest length while a joint is
+ *  dragged. Pinned joints (the dragged one + a torso anchor) don't move; the rest relax.
+ *  Mutates a CLONE and returns it. */
+export function solveBoneLengths(
+  p: Pose, figId: string, rest: Record<string, number>, pinned: string[], w: number, h: number, iters = 10
+): Pose {
+  const next = clonePose(p);
+  const fig = figureById(next, figId);
+  if (!fig) return p;
+  const by = new Map(fig.keypoints.map((k) => [k.id, k]));
+  const pin = new Set(pinned);
+  for (let it = 0; it < iters; it++) {
+    for (const [a, b] of fig.bones) {
+      const L = rest[boneKey(a, b)];
+      const ka = by.get(a);
+      const kb = by.get(b);
+      if (!ka || !kb || L === undefined || !ka.visible || !kb.visible) continue;
+      const dx = kb.x - ka.x;
+      const dy = kb.y - ka.y;
+      const d = Math.hypot(dx, dy) || 1e-6;
+      const diff = (d - L) / d;
+      const pa = pin.has(a) ? 0 : 1;
+      const pb = pin.has(b) ? 0 : 1;
+      const tot = pa + pb;
+      if (tot === 0) continue;
+      const wa = pa / tot;
+      const wb = pb / tot;
+      ka.x += wa * diff * dx;
+      ka.y += wa * diff * dy;
+      kb.x -= wb * diff * dx;
+      kb.y -= wb * diff * dy;
+    }
+  }
+  for (const k of fig.keypoints) {
+    k.x = Math.min(Math.max(k.x, 0), w);
+    k.y = Math.min(Math.max(k.y, 0), h);
+  }
+  return next;
+}
+
+const DEPTH_CLAMP = 6;
+
+/** Depth/occlusion: bring the limbs touching a joint forward (dir=+1) or send back (dir=-1).
+ *  render draws higher limbOrder first (behind), so "forward" lowers it. */
+export function adjustLimbDepth(p: Pose, figId: string, kpId: string, dir: 1 | -1): Pose {
+  const next = clonePose(p);
+  const fig = figureById(next, figId);
+  if (!fig) return p;
+  for (const [a, b] of fig.bones) {
+    if (a !== kpId && b !== kpId) continue;
+    const key = boneKey(a, b);
+    const cur = fig.limbOrder[key] ?? 0;
+    fig.limbOrder[key] = Math.max(-DEPTH_CLAMP, Math.min(DEPTH_CLAMP, cur - dir));
+  }
+  return next;
+}
+
 /** Figure counterpart of a body keypoint id under L↔R mirroring (for symmetry editing). */
 export function mirrorPartnerId(fig: Figure, kpId: string): string | null {
   const i = bodyIndex(kpId);
