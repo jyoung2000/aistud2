@@ -24,6 +24,26 @@ export function dist(a: Pt, b: Pt): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+/**
+ * Freehand sampling: append `to` only once the cursor has moved ≥ `step` image px from the last
+ * vertex, and interpolate intermediate vertices along the segment so a fast flick (a big jump
+ * between mousemove events) still yields a continuous path instead of a straight skip.
+ */
+export function appendFreehand(pts: Pt[], to: Pt, step: number): Pt[] {
+  if (pts.length === 0) return [to];
+  const last = pts[pts.length - 1];
+  const d = dist(last, to);
+  if (d < step) return pts; // hasn't moved far enough → no new vertex
+  const out = pts.slice();
+  const n = Math.floor(d / step);
+  for (let i = 1; i <= n; i++) {
+    const f = (i * step) / d;
+    out.push({ x: last.x + (to.x - last.x) * f, y: last.y + (to.y - last.y) * f });
+  }
+  if (dist(out[out.length - 1], to) > 1e-3) out.push(to);
+  return out;
+}
+
 /** Snap `to` onto the nearest 45° ray from `from` (Shift constrain). */
 export function constrain45(from: Pt, to: Pt): Pt {
   const dx = to.x - from.x;

@@ -9,7 +9,7 @@ import {
   type ViewTransform,
 } from "./coords";
 import { MaskBuffer, opFromModifiers, type BoolOp } from "./maskBuffer";
-import { rasterizePolygon, dist, constrain45, flatten } from "./lasso";
+import { rasterizePolygon, dist, constrain45, flatten, appendFreehand } from "./lasso";
 import { LiveWire } from "./livewire";
 import {
   emptyPath,
@@ -707,9 +707,17 @@ export function CanvasStage() {
       return;
     }
     if (tool === "lasso" && ip) {
-      setLassoCursor(ip);
+      // Polygonal: Shift shows the rubber-band already snapped to 45°, matching what a click
+      // will place (PS parity). Otherwise the raw cursor.
+      if (lassoMode === "poly" && e.evt.shiftKey && lassoPts.length > 0) {
+        setLassoCursor(constrain45(lassoPts[lassoPts.length - 1], ip));
+      } else {
+        setLassoCursor(ip);
+      }
       if (freehand.current) {
-        setLassoPts((pts) => (pts.length === 0 || dist(pts[pts.length - 1], ip) > 2 / t.scale ? [...pts, ip] : pts));
+        // distance-thresholded sampling (1.5 screen px, constant on screen at any zoom) +
+        // linear interpolation so a fast flick doesn't skip a straight jump.
+        setLassoPts((pts) => appendFreehand(pts, ip, 1.5 / t.scale));
       } else if (lassoMode === "magnetic" && wire.current && lassoPts.length > 0) {
         setPreview(wire.current.pathTo(ip) ?? [lassoPts[lassoPts.length - 1], ip]);
       }

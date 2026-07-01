@@ -49,7 +49,7 @@ extend, not rewrite.
 - ⚠️ **Shift 45°** — applied to the *placed* anchor only; the live rubber-band preview is **not**
   drawn constrained, so it doesn't match what will be placed.
 - ✅ Backspace removes last anchor (`:349`).
-- ⚠️ **Close gestures** — click-origin ✅, Enter ✅, **double-click ❌** (no dblclick handler).
+- ✅ **Close gestures** — click-origin ✅, Enter ✅, double-click ✅ (`Stage onDblClick`, `:1902`).
 - ✅ Esc cancels (`:354`).
 - ❌ **Alt-drag mid-gesture → freehand** — not implemented.
 
@@ -61,7 +61,7 @@ extend, not rewrite.
 - ❌ **Frequency / auto-fastening** — only manual clicks drop anchors; no distance-based auto-drop.
 - ✅ `[` / `]` change Width live and re-seed (`:356`).
 - ✅ Manual click adds a fastening point; Backspace removes last + restores prior map (`:349-353`).
-- ⚠️ Close/cancel same as polygonal (so also missing double-click).
+- ✅ Close/cancel same as polygonal (near-origin / Enter / double-click / Esc).
 
 ### Commit / edge quality (all lassos)
 - ✅ **Boolean op from gesture-start modifiers** (`lassoOp.current`, `:679,807`).
