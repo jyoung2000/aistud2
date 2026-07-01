@@ -1,7 +1,7 @@
 @echo off
 REM Neuclip Studio - build the standalone app (Windows).
 REM Produces "Neuclip Studio.exe" (CPU, one file) in this folder, and on an NVIDIA machine
-REM offers to also build "Neuclip Studio GPU" (a folder) that uses your GPU on double-click.
+REM automatically also builds "Neuclip Studio GPU" (a folder) that uses your GPU on double-click.
 REM Copy either to any PC and double-click - NO Python needed on that machine.
 REM This takes a minute (CPU) / several minutes (GPU). For everyday use, "Open Neuclip Studio.bat" is faster.
 setlocal
@@ -33,21 +33,17 @@ if not exist "%REPO%\frontend\dist\index.html" (
 echo Building the standalone CPU app...
 "%VPY%" "%REPO%\sidecar\build_app.py" || (echo Build failed. & pause & exit /b 1)
 
-REM --- Optional GPU build (NVIDIA - bundles CUDA PyTorch, uses the GPU on double-click) ------
+REM --- GPU build (NVIDIA - bundles CUDA PyTorch, uses the GPU on double-click) ---------------
+REM Built automatically whenever an NVIDIA GPU is present. No prompt.
 where nvidia-smi >nul 2>&1
 if errorlevel 1 goto :done
 echo.
 echo ============================================================================
-echo   An NVIDIA GPU was detected.
-echo   The GPU build bundles CUDA PyTorch, so double-clicking it uses your GPU
-echo   with NO install and NO first-run download. It is LARGE:
-echo     - a ~2.5 GB one-time CUDA PyTorch download
-echo     - a ~4-5 GB output folder ("Neuclip Studio GPU")
+echo   NVIDIA GPU detected - building the GPU version automatically.
+echo   This is LARGE: a ~2.5 GB one-time CUDA PyTorch download + a ~4-5 GB
+echo   output folder ("Neuclip Studio GPU"). It takes several minutes.
+echo   (To skip it, run this from a machine without an NVIDIA GPU / driver.)
 echo ============================================================================
-set "BUILDGPU=Y"
-set /p "BUILDGPU=Build the GPU version too? [Y/n]: "
-if /I not "%BUILDGPU%"=="Y" goto :done
-
 echo.
 echo Installing CUDA PyTorch (one-time, large - please wait)...
 "%VPY%" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 || (echo CUDA PyTorch install failed. & pause & exit /b 1)
