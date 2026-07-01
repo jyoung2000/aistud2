@@ -28,6 +28,7 @@ export interface GenOpts {
   reference_png?: string;
   reference_role?: string;
   seed?: number;
+  loras?: { ref: string; weight: number; trigger_words: string[] }[];
 }
 
 export async function generate(

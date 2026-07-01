@@ -10,6 +10,7 @@ import { ModelCompare, ParadigmBadge } from "./modelCompare";
 import { TunedPrompts } from "./tunedPrompts";
 import { LoraPanel } from "./loraPanel";
 import type { AttachedLora } from "../api/loras";
+import { setGenConfig } from "../state/genConfig";
 
 // Minimal "Model & params" step of the inspector pipeline. Stub host so the Reference
 // block (M1) and Compare mode (shootout M1) can be built and verified standalone;
@@ -41,6 +42,38 @@ export function InspectorPipeline() {
 
   const [refByModel, setRefByModel] = useState<Record<string, ReferenceState>>({});
   const refState = refByModel[primaryId] ?? defaultReferenceState(model);
+
+  // Publish the active model + reference/pose + LoRAs to the shared store so the canvas's
+  // Generate action can send them (reference milestone M3). Reference-image files (replace/
+  // style) are read to a data URL; the pose role uses the rendered control image directly.
+  useEffect(() => {
+    const role = model.reference_roles.includes(refState.role) ? refState.role : null;
+    const loras = attachedLoras.map((a) => ({ ref: a.ref, weight: a.weight, trigger_words: a.trigger_words }));
+    const controlStrength =
+      role === "pose" ? refState.poseStrength : role === "style" ? refState.styleStrength : 1;
+
+    const publish = (referencePng: string | null) =>
+      setGenConfig({
+        modelId: model.id,
+        modelLabel: model.label,
+        referenceRole: role,
+        referencePng,
+        controlStrength,
+        pose: role === "pose" ? refState.pose : undefined,
+        loras,
+      });
+
+    if (role === "pose") {
+      publish(refState.controlImage ?? null);
+    } else if ((role === "replace" || role === "style") && refState.file) {
+      const fr = new FileReader();
+      fr.onload = () => publish(String(fr.result));
+      fr.onerror = () => publish(null);
+      fr.readAsDataURL(refState.file);
+    } else {
+      publish(null);
+    }
+  }, [model, refState, attachedLoras]);
 
   // Routing: make `toId` the active/primary model for a role it supports, carrying the
   // reference image and the chosen role across the switch.

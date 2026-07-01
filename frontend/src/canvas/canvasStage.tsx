@@ -57,6 +57,7 @@ import {
   type AdjustSpec,
 } from "./document";
 import { b64ToFile, outpaint, finishImage, fillBehind } from "../api/generate";
+import { getGenConfig, useGenConfig } from "../state/genConfig";
 import { LayersPanel } from "../panels/layersPanel";
 
 type Tool = "select" | "lasso" | "pen" | "wand" | "move" | "hand";
@@ -1520,14 +1521,30 @@ export function CanvasStage() {
     return c;
   };
 
-  // crop -> (mock model) -> feathered composite; result becomes a new ai-edit layer.
+  // crop -> model -> feathered composite; result becomes a new ai-edit layer. The inspector's
+  // model + reference/pose + LoRAs ride along via the shared genConfig store (reference M3).
   const generateNow = async () => {
     if (!imageId || !mask || mask.isEmpty()) return;
     pushHistory();
+    const cfg = getGenConfig();
     const maskPng = maskToPngDataUrl(mask.data, mask.width, mask.height);
     setGenStatus("busy");
     try {
-      const job = await generate(imageId, maskPng, prompt, { mock: true, harmonize });
+      const params: Record<string, unknown> = {};
+      if (cfg.referenceRole === "pose" || cfg.referenceRole === "style") {
+        params.control_strength = cfg.controlStrength;
+      }
+      const job = await generate(imageId, maskPng, prompt, {
+        // No model selected → mock path; otherwise let the sidecar use the real model (it
+        // still falls back to mock when no WaveSpeed key is set).
+        mock: !cfg.modelId,
+        model_slug: cfg.modelId ?? undefined,
+        reference_png: cfg.referencePng ?? undefined,
+        reference_role: cfg.referenceRole ?? undefined,
+        params,
+        loras: cfg.loras.length ? cfg.loras : undefined,
+        harmonize,
+      });
       const done = await runToCompletion(job, (s) =>
         setGenStatus(s === "polling" ? "polling" : "busy")
       );
@@ -1546,11 +1563,13 @@ export function CanvasStage() {
           mask: new Uint8Array(mask.data),
           resultUrl: `data:image/png;base64,${done.result_png}`,
           source: {
-            model: done.mode === "mock" ? "mock" : "wavespeed",
+            model: done.mode === "mock" ? "mock" : cfg.modelId ?? "wavespeed",
             prompt,
             seed: 0,
-            params: {},
+            params: (params as Record<string, number>),
             sendRegion: (done.region as [number, number, number, number]) ?? [0, 0, img.naturalWidth - 1, img.naturalHeight - 1],
+            reference: cfg.referencePng ? { role: cfg.referenceRole ?? "replace", present: true } : undefined,
+            pose: cfg.pose,
           },
           harmonize: { ...harmonize },
           bounds: boundsFromMask(mask.data, img.naturalWidth, img.naturalHeight) ?? undefined,
@@ -1952,6 +1971,7 @@ function GenerateBar({
   onPick: (url: string) => void;
 }) {
   const A = COLOR_GENERATION;
+  const cfg = useGenConfig();
   const chip =
     status === "polling"
       ? { c: "#eab308", t: "polling…" }
@@ -1973,6 +1993,13 @@ function GenerateBar({
         gap: 8,
       }}
     >
+      <div style={{ fontSize: 10.5, color: "#8a7f63", display: "flex", alignItems: "center", gap: 6, paddingLeft: 16 }}>
+        <span>→ {cfg.modelLabel ?? "mock (no model selected)"}</span>
+        {cfg.referenceRole && cfg.referencePng && (
+          <span style={{ color: A }}>· {cfg.referenceRole} reference{cfg.referenceRole === "pose" ? ` (${Math.round(cfg.controlStrength * 100)}%)` : ""}</span>
+        )}
+        {cfg.loras.length > 0 && <span style={{ color: A }}>· {cfg.loras.length} LoRA</span>}
+      </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span style={{ width: 8, height: 8, borderRadius: 2, background: A, boxShadow: `0 0 6px ${A}` }} />
         <input
