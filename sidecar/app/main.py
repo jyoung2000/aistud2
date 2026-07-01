@@ -257,6 +257,42 @@ def decompose(body: DecomposeIn) -> dict:
     return {"regions": out, "backend": _selector.backend, "width": session.width, "height": session.height}
 
 
+# --- Pose editor (manual skeleton workspace) --------------------------------
+class PoseExtractIn(BaseModel):
+    id: str
+
+
+@app.post("/pose/extract")
+def pose_extract(body: PoseExtractIn) -> dict:
+    """Extract an editable pose skeleton from the active image (DWpose on the 4070, mannequin
+    fallback elsewhere). Keypoints are image-space; the *edited* rig becomes the control signal."""
+    try:
+        session = imaging.require_active(body.id)
+    except KeyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    from app import pose as pose_mod
+
+    return pose_mod.extract_pose(session.rgb)
+
+
+class PoseRenderIn(BaseModel):
+    pose: dict
+    width: int
+    height: int
+
+
+@app.post("/pose/render")
+def pose_render(body: PoseRenderIn) -> dict:
+    """Render the OpenPose control image (colored skeleton on black) for a pose — the exact
+    control signal the pose ControlNet adapters consume."""
+    from app import pose as pose_mod
+
+    if body.width <= 0 or body.height <= 0 or body.width * body.height > 64_000_000:
+        raise HTTPException(status_code=400, detail="invalid render size")
+    img = pose_mod.render_control_image(body.pose, body.width, body.height)
+    return {"control_png": imaging.png_to_base64(img, "RGB"), "width": body.width, "height": body.height}
+
+
 class FillBehindIn(BaseModel):
     id: str
     hole_png: str  # subject mask (the hole to fill in the background)
