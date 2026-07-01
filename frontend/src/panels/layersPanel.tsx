@@ -34,6 +34,7 @@ export function LayersPanel({
   onDeleteSel,
   onSelOpacity,
   onFillBehind,
+  onFlattenLayer,
 }: {
   layers: Layer[];
   activeId: string | null;
@@ -55,6 +56,7 @@ export function LayersPanel({
   onDeleteSel: () => void;
   onSelOpacity: (v: number) => void;
   onFillBehind: (id: string) => void;
+  onFlattenLayer: (id: string) => void;
 }) {
   const selCount = selectedIds.length;
   const hasDecomposed = layers.some((l) => l.kind === "decomposed");
@@ -205,6 +207,15 @@ export function LayersPanel({
                     style={{ ...smallBtn, color: "#f2a33c", borderColor: "#f2a33c55" }}
                   >
                     fill ⤓
+                  </button>
+                )}
+                {(L.kind === "imported" || L.kind === "ai-edit" || L.kind === "outpaint") && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onFlattenLayer(L.id); }}
+                    title="Flatten into base — bake this layer (and everything below it) into the base so AI edits apply to it. Layers above stay independent."
+                    style={{ ...smallBtn, color: "#f2a33c", borderColor: "#f2a33c55" }}
+                  >
+                    flatten ⤵
                   </button>
                 )}
                 <button onClick={(e) => { e.stopPropagation(); onDelete(L.id); }} title="Delete layer" style={{ ...smallBtn, color: "#ef4444" }}>

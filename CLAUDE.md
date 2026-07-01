@@ -255,6 +255,10 @@ control signal — the **edited** rig, not the raw extraction, becomes the contr
   black holes) into a NEW base, re-uploads it to the sidecar (`/load`), and resets the layer
   stack — so selections + generation now see the imported/edited pixels. A deliberate commit
   (undoable). Reuses the outpaint→new-base pattern.
+- **Flatten one layer** (`flattenLayer`, layers-panel **flatten ⤵** on imported/ai-edit/outpaint
+  rows): merge-down — bakes the base + every layer up to and including this one into a new base,
+  keeps the layers ABOVE independent (preserves z-order + final pixels exactly), re-uploads to the
+  sidecar. For an imported layer on top this is exactly "bake just this image."
 - **Overlap hint:** `selectionOverlapsImport` (mask bbox ∩ any imported layer's `transformedBounds`)
   shows an amber warning + inline **Flatten for AI** button right above Generate, so a selection
   over an un-baked import can't silently no-op. Explained in onboarding card 5.

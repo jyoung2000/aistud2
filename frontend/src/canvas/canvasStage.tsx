@@ -564,6 +564,59 @@ export function CanvasStage() {
     }
   };
 
+  // Flatten a single layer into the base (merge-down): bake the base + every layer up to and
+  // including this one, keep the layers ABOVE it independent (preserves z-order and the final
+  // pixels exactly). Makes that layer's pixels part of the sidecar base so AI edits apply.
+  const flattenLayer = async (layerId: string) => {
+    if (!img) return;
+    const idx = layers.findIndex((l) => l.id === layerId);
+    if (idx < 0) return;
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    const lower = layers.slice(0, idx + 1);
+    const upper = layers.slice(idx + 1);
+    const baked = compositeDoc(img, W, H, lower, layerImgs.current, { drawBase: !decomposed });
+    const flat = document.createElement("canvas");
+    flat.width = W;
+    flat.height = H;
+    const fx = flat.getContext("2d")!;
+    if (decomposed) fx.drawImage(img, 0, 0, W, H);
+    fx.drawImage(baked, 0, 0);
+    const dataUrl = flat.toDataURL("image/png");
+    setGenStatus("busy");
+    try {
+      pushHistory();
+      const im = await new Promise<HTMLImageElement>((res, rej) => {
+        const i = new window.Image();
+        i.onload = () => res(i);
+        i.onerror = rej;
+        i.src = dataUrl;
+      });
+      setImg(im);
+      for (const L of lower) layerImgs.current.delete(L.id); // baked-in ids no longer needed
+      setLayers(upper); // upper layers keep their pixel caches (same ids, same W×H)
+      setActiveLayer(upper.length ? upper[upper.length - 1].id : null);
+      setSelectedLayerIds([]);
+      setDecomposed(upper.some((l) => l.kind === "decomposed"));
+      setMask(new MaskBuffer(W, H));
+      cacheImgPx(im);
+      const tc = document.createElement("canvas");
+      const s = 80 / Math.max(W, H);
+      tc.width = Math.max(1, Math.round(W * s));
+      tc.height = Math.max(1, Math.round(H * s));
+      tc.getContext("2d")!.drawImage(im, 0, 0, tc.width, tc.height);
+      setBaseThumb(tc.toDataURL("image/png"));
+      const up = await loadImageToSidecar(await b64ToFile(dataUrl.split(",")[1]));
+      setImageId(up.id);
+      setBackend(up.backend);
+      setImgVer((v) => v + 1);
+      setGenStatus("idle");
+    } catch (e) {
+      console.error("flatten layer failed:", e);
+      setGenStatus("failed");
+    }
+  };
+
   // Run a smart-select and replace the working mask with the result.
   const runSelect = async (
     points: SamPoint[],
@@ -1748,6 +1801,7 @@ export function CanvasStage() {
           onDeleteSel={deleteSelected}
           onSelOpacity={setSelOpacity}
           onFillBehind={fillBehindLayer}
+          onFlattenLayer={flattenLayer}
         />
       )}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>

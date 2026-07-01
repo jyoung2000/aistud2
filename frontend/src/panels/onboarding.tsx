@@ -97,9 +97,10 @@ const WALK: WalkStep[] = [
         the AI edits the <i>base</i> image, so it can't see an imported layer until you bake it in.
         Hit <b>Flatten for AI</b> (the AI-side amber button, also offered right above Generate when
         your selection overlaps an import) to merge everything into the base — then selecting and
-        editing the imported content works exactly like the rest of the picture. A great combo:
-        paste an object, flatten, then select it and let harmonization match its light &amp; color
-        to the scene.
+        editing the imported content works exactly like the rest of the picture. Or flatten just
+        one layer with <b>flatten ⤵</b> in the layers panel (bakes it and everything below,
+        keeping layers above independent). A great combo: paste an object, flatten, then select it
+        and let harmonization match its light &amp; color to the scene.
       </>
     ),
   },
