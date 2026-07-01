@@ -1,6 +1,30 @@
 # Opening Neuclip Studio
 
-## ⭐ The easy way — one download, double-click (no setup)
+## ⚡ Which one uses my GPU? (read this first)
+
+There are two ways to run the app, and they are NOT the same:
+
+| | Uses the NVIDIA GPU? | Needs Python? | How it looks |
+|---|---|---|---|
+| **`Neuclip Studio.exe`** (standalone) | ❌ **No — CPU only, always** | No | opens in your browser |
+| **`Open Neuclip Studio.bat`** (launcher) | ✅ **Yes** (auto-installs CUDA PyTorch) | Yes (3.11) | opens in your browser |
+
+**Why the `.exe` can't use your GPU:** it's a frozen, self-contained bundle — it can't carry
+the multi-GB CUDA PyTorch libraries, and it can't borrow your system's Python. That's the
+price of "no install needed." It's meant for CPU-only machines or for sharing the app.
+
+**To use your RTX 4070: run `Open Neuclip Studio.bat`.** On first launch it detects the GPU
+and installs CUDA PyTorch automatically (a ~2.5 GB one-time download); after that the status
+badge reads **RTX 4070** and GPU work runs on the card. Both open in your browser — the browser
+UI is unrelated to CPU/GPU. (A native desktop *window* is the separate Tauri build.)
+
+> The heavy GPU **models** (SAM 2 select, BiRefNet matting, upscalers, Grounding-DINO) are
+> extra optional downloads with their own weights; installing CUDA PyTorch lights up the GPU
+> and the parts that ship with it, and the rest activate as you add those model weights.
+
+---
+
+## ⭐ The easy way — one download, double-click (no setup, CPU only)
 
 Neuclip Studio ships as a **single self-contained app**. There is nothing to install — no
 Python, Node, or Rust. It starts a small local server and opens the app in your browser.
