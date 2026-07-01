@@ -275,6 +275,49 @@ def pose_extract(body: PoseExtractIn) -> dict:
     return pose_mod.extract_pose(session.rgb)
 
 
+class PoseExtractUploadIn(BaseModel):
+    image_png: str  # base64 PNG/JPEG (data URL or raw) of an external pose-reference image
+
+
+@app.post("/pose/extract_upload")
+def pose_extract_upload(body: PoseExtractUploadIn) -> dict:
+    """Extract a skeleton from an uploaded pose-reference image (not the active session) so it
+    can be used as a target to match. Does not disturb the active image."""
+    import base64
+
+    from app import pose as pose_mod
+
+    data = body.image_png
+    if "," in data and data.strip().startswith("data:"):
+        data = data.split(",", 1)[1]
+    try:
+        rgb = imaging.load_rgb(base64.b64decode(data))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"bad image: {e}")
+    return pose_mod.extract_pose(rgb)
+
+
+@app.get("/pose/library")
+def pose_library_list() -> dict:
+    from app import pose_library
+
+    return {"poses": pose_library.list_poses()}
+
+
+@app.post("/pose/library")
+def pose_library_save(body: dict) -> dict:
+    from app import pose_library
+
+    return {"poses": pose_library.save(body)}
+
+
+@app.post("/pose/library/remove")
+def pose_library_remove(body: dict) -> dict:
+    from app import pose_library
+
+    return {"poses": pose_library.remove(str(body.get("id", "")))}
+
+
 class PoseRenderIn(BaseModel):
     pose: dict
     width: int

@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { COLOR_GENERATION } from "../constants";
 import {
+  extractPoseFromUpload,
+  listPoses,
+  removePose,
+  savePose,
+  type SavedPose,
+} from "../api/pose";
+import {
   fitTransform,
   imageToScreen,
   screenToImage,
@@ -11,11 +18,16 @@ import {
   BODY_LIMBS,
   BODY_NAMES,
   LIMB_COLORS,
+  addFigure,
   adjustLimbDepth,
+  appendFigures,
+  blankPose,
   boneKey,
   boneRestLengths,
   bodyIndex,
   clonePose,
+  deleteFigure,
+  duplicateFigure,
   figureCenter,
   groupVisible,
   keypointPos,
@@ -80,6 +92,10 @@ export function PoseEditor({
   const [onion, setOnion] = useState(false);
   const restRef = useRef<Record<string, number> | null>(null);
 
+  const [saved, setSaved] = useState<SavedPose[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
   const dragRef = useRef<
     | { kind: "pan"; startView: ViewTransform; sx: number; sy: number }
     | { kind: "joint"; id: string; figId: string }
@@ -128,6 +144,83 @@ export function PoseEditor({
       return nxt;
     });
   }, []);
+
+  // --- multi-figure + library (P5) -----------------------------------------
+  useEffect(() => {
+    if (open) listPoses().then(setSaved).catch(() => setSaved([]));
+  }, [open]);
+
+  const addFig = () => {
+    pushUndo(clonePose(pose));
+    const [np, id] = addFigure(pose, width, height);
+    setPose(np);
+    setActiveFig(id);
+    setSelected(null);
+  };
+  const dupFig = () => {
+    pushUndo(clonePose(pose));
+    const [np, id] = duplicateFigure(pose, activeFig);
+    setPose(np);
+    setActiveFig(id);
+    setSelected(null);
+  };
+  const delFig = () => {
+    if (pose.figures.length <= 1) return;
+    pushUndo(clonePose(pose));
+    const np = deleteFigure(pose, activeFig);
+    setPose(np);
+    setActiveFig(np.figures[0]?.id ?? "fig1");
+    setSelected(null);
+  };
+  const startBlank = () => {
+    pushUndo(clonePose(pose));
+    setPose(blankPose(width, height));
+    setActiveFig("fig1");
+    setSelected(null);
+  };
+
+  const saveCurrent = async () => {
+    const name = window.prompt("Save pose as:", `Pose ${saved.length + 1}`);
+    if (!name) return;
+    setBusy("save");
+    try {
+      setSaved(await savePose(name, pose, width, height));
+    } catch (e) {
+      window.alert(`Save failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const loadSaved = (sp: SavedPose) => {
+    pushUndo(clonePose(pose));
+    setPose(clonePose(sp.pose));
+    setActiveFig(sp.pose.figures[0]?.id ?? "fig1");
+    setSelected(null);
+  };
+  const deleteSaved = async (id: string) => {
+    setSaved(await removePose(id));
+  };
+  const loadExternalImage = async (file: File) => {
+    setBusy("extract");
+    try {
+      const dataUrl = await new Promise<string>((res, rej) => {
+        const fr = new FileReader();
+        fr.onload = () => res(String(fr.result));
+        fr.onerror = rej;
+        fr.readAsDataURL(file);
+      });
+      const ref = await extractPoseFromUpload(dataUrl);
+      pushUndo(clonePose(pose));
+      const [np, id] = appendFigures(pose, ref.figures);
+      setPose(np);
+      if (id) setActiveFig(id);
+      setSelected(null);
+    } catch (e) {
+      window.alert(`Pose extraction failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   // Reset editable pose whenever we (re)open with a new source pose.
   useEffect(() => {
@@ -438,6 +531,57 @@ export function PoseEditor({
           <span style={{ fontSize: 10.5, color: "#5c6473" }}>
             drag joints · space/middle-drag to pan · wheel to zoom
           </span>
+        </div>
+
+        {/* figures + library row */}
+        <div style={{ ...toolbar, flexWrap: "wrap", rowGap: 6 }}>
+          <span style={{ fontSize: 10, color: "#64748b", fontWeight: 700, letterSpacing: 1 }}>FIGURES</span>
+          {pose.figures.map((f, i) => (
+            <button
+              key={f.id}
+              onClick={() => {
+                setActiveFig(f.id);
+                setSelected(null);
+              }}
+              style={{ ...toolBtn, borderColor: f.id === activeFig ? AMBER : "#2a2f37", color: f.id === activeFig ? "#f4d9a6" : "#cbd5e1" }}
+            >
+              {i + 1}
+            </button>
+          ))}
+          <button style={toolBtn} onClick={addFig} title="Add a blank figure">+ Add</button>
+          <button style={toolBtn} onClick={dupFig} title="Duplicate active figure">Dup</button>
+          <button style={{ ...toolBtn, color: "#e5687a" }} onClick={delFig} disabled={pose.figures.length <= 1} title="Delete active figure">Del</button>
+          <button style={toolBtn} onClick={startBlank} title="Start from a single blank A-pose">Blank rig</button>
+
+          <div style={{ width: 1, height: 18, background: "#2a2f37" }} />
+          <span style={{ fontSize: 10, color: "#64748b", fontWeight: 700, letterSpacing: 1 }}>LIBRARY</span>
+          <button style={toolBtn} onClick={saveCurrent} disabled={busy === "save"}>
+            {busy === "save" ? "Saving…" : "Save pose"}
+          </button>
+          <button style={toolBtn} onClick={() => fileRef.current?.click()} disabled={busy === "extract"} title="Load a pose-reference image and extract its skeleton">
+            {busy === "extract" ? "Extracting…" : "Load pose from image"}
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) loadExternalImage(f);
+              e.currentTarget.value = "";
+            }}
+          />
+          {saved.map((sp) => (
+            <span key={sp.id} style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+              <button style={{ ...toolBtn, fontSize: 11 }} onClick={() => loadSaved(sp)} title={`Load "${sp.name}"`}>
+                {sp.name}
+              </button>
+              <button style={{ ...toolBtn, padding: "3px 5px", color: "#e5687a" }} onClick={() => deleteSaved(sp.id)} title="Delete saved pose">
+                ×
+              </button>
+            </span>
+          ))}
         </div>
 
         {/* canvas + inspector */}

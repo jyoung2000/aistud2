@@ -151,6 +151,80 @@ export function clonePose(p: Pose): Pose {
   return JSON.parse(JSON.stringify(p));
 }
 
+// --- multi-figure ops --------------------------------------------------------
+
+function uniqueFigureId(p: Pose): string {
+  let n = p.figures.length + 1;
+  const ids = new Set(p.figures.map((f) => f.id));
+  while (ids.has(`fig${n}`)) n++;
+  return `fig${n}`;
+}
+
+/** Re-key a figure (and every keypoint id + bones + limbOrder) to a new figure id. */
+function rekeyFigure(fig: Figure, newId: string): Figure {
+  const map = new Map<string, string>();
+  const keypoints = fig.keypoints.map((k) => {
+    const parts = k.id.split(":");
+    const nid = `${newId}:${parts[1]}:${parts[2]}`;
+    map.set(k.id, nid);
+    return { ...k, id: nid };
+  });
+  const bones = fig.bones.map(([a, b]) => [map.get(a) ?? a, map.get(b) ?? b] as [string, string]);
+  const limbOrder: Record<string, number> = {};
+  for (const [key, v] of Object.entries(fig.limbOrder)) {
+    const [a, b] = key.split("|");
+    limbOrder[boneKey(map.get(a) ?? a, map.get(b) ?? b)] = v;
+  }
+  return { ...fig, id: newId, keypoints, bones, limbOrder, transform: { ...fig.transform } };
+}
+
+/** Add a blank A-pose mannequin as a new figure. Returns [pose, newFigureId]. */
+export function addFigure(p: Pose, width: number, height: number): [Pose, string] {
+  const next = clonePose(p);
+  const id = uniqueFigureId(next);
+  // stagger a little so a new figure isn't exactly on top of an existing one
+  const n = next.figures.length;
+  next.figures.push(defaultFigure(width, height, id, { cx: 0.5 + (n % 2 === 0 ? 0.12 : -0.12) }));
+  return [next, id];
+}
+
+/** Duplicate a figure (offset copy). Returns [pose, newFigureId]. */
+export function duplicateFigure(p: Pose, figId: string, dx = 30, dy = 0): [Pose, string] {
+  const next = clonePose(p);
+  const src = next.figures.find((f) => f.id === figId);
+  if (!src) return [p, figId];
+  const id = uniqueFigureId(next);
+  const copy = rekeyFigure(src, id);
+  copy.transform = { ...copy.transform, tx: copy.transform.tx + dx, ty: copy.transform.ty + dy };
+  next.figures.push(copy);
+  return [next, id];
+}
+
+export function deleteFigure(p: Pose, figId: string): Pose {
+  if (p.figures.length <= 1) return p; // keep at least one rig
+  const next = clonePose(p);
+  next.figures = next.figures.filter((f) => f.id !== figId);
+  return next;
+}
+
+/** Merge external figures (e.g. extracted from a reference image) into a pose, re-keyed to
+ *  avoid id collisions. Returns [pose, firstAddedId]. */
+export function appendFigures(p: Pose, figures: Figure[]): [Pose, string | null] {
+  let next = clonePose(p);
+  let first: string | null = null;
+  for (const f of figures) {
+    const id = uniqueFigureId(next);
+    next.figures.push(rekeyFigure(f, id));
+    if (!first) first = id;
+  }
+  return [next, first];
+}
+
+/** A fresh single-figure blank rig for "pose from scratch". */
+export function blankPose(width: number, height: number): Pose {
+  return { figures: [defaultFigure(width, height, "fig1")], width, height };
+}
+
 // --- editing ops (pure; the editor commits these to its undo stack) ----------
 
 /** Left↔right body-index pairs, for mirror + symmetry editing. */
