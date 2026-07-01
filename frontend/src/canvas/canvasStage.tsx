@@ -320,6 +320,51 @@ export function CanvasStage() {
         invertMask(); // Cmd/Ctrl+Shift+I — invert (subject -> background)
         return;
       }
+      if (mod && (e.key === "s" || e.key === "S")) {
+        e.preventDefault(); // Cmd/Ctrl+S — save .neuclip (don't trigger the browser save)
+        saveProject();
+        return;
+      }
+      if (mod && (e.key === "j" || e.key === "J")) {
+        e.preventDefault(); // Cmd/Ctrl+J — layer via copy (selection -> new layer)
+        layerFromSelection();
+        return;
+      }
+      if (mod && (e.key === "d" || e.key === "D")) {
+        e.preventDefault(); // Cmd/Ctrl+D — deselect
+        if (mask && !mask.isEmpty()) {
+          pushHistory();
+          setMask(new MaskBuffer(mask.width, mask.height));
+        }
+        setSamPoints([]);
+        return;
+      }
+      if (mod && (e.key === "a" || e.key === "A")) {
+        e.preventDefault(); // Cmd/Ctrl+A — select all
+        if (mask) {
+          pushHistory();
+          const all = new MaskBuffer(mask.width, mask.height);
+          all.data.fill(255);
+          setMask(all);
+        }
+        return;
+      }
+      if (!mod && (e.key === "h" || e.key === "H")) {
+        setTool("hand"); // H — Hand (pan) tool
+        return;
+      }
+      // Delete/Backspace deletes the selected layer(s) when any are selected and we're not
+      // mid lasso/pen gesture (those use Backspace to drop the last anchor).
+      if (
+        (e.key === "Delete" || e.key === "Backspace") &&
+        selectedLayerIds.length &&
+        tool !== "lasso" &&
+        tool !== "pen"
+      ) {
+        e.preventDefault();
+        deleteSelected();
+        return;
+      }
       if (e.key === "L" && e.shiftKey) {
         e.preventDefault();
         setTool("lasso");
@@ -997,6 +1042,49 @@ export function CanvasStage() {
     const next = mask.clone();
     fn(next);
     setMask(next);
+  };
+
+  // Layer via Copy (Photoshop Cmd/Ctrl+J): copy the current selection's base pixels into a new
+  // movable layer, in place. No selection → no-op.
+  const layerFromSelection = () => {
+    if (!img || !mask || mask.isEmpty()) return;
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    const c = document.createElement("canvas");
+    c.width = W;
+    c.height = H;
+    const ctx = c.getContext("2d")!;
+    ctx.drawImage(img, 0, 0, W, H);
+    const idata = ctx.getImageData(0, 0, W, H);
+    const md = mask.data;
+    for (let i = 0; i < md.length; i++) if (!md[i]) idata.data[i * 4 + 3] = 0; // clip to selection
+    ctx.putImageData(idata, 0, 0);
+    const dataUrl = c.toDataURL("image/png");
+    const placed = new window.Image();
+    placed.onload = () => {
+      pushHistory();
+      const lid = newLayerId();
+      layerImgs.current.set(lid, placed);
+      const n = layers.filter((l) => l.kind === "imported").length + 1;
+      const layer: DocLayer = {
+        id: lid,
+        name: `Layer via copy ${n}`,
+        visible: true,
+        opacity: 1,
+        blendMode: "normal",
+        kind: "imported",
+        mask: new Uint8Array(mask.data),
+        resultUrl: dataUrl,
+        bounds: boundsFromMask(mask.data, W, H) ?? undefined,
+        transform: { ...IDENTITY_TRANSFORM },
+      };
+      setLayers((ls) => [...ls, layer]);
+      setActiveLayer(lid);
+      setSelectedLayerIds([lid]);
+      setTool("move");
+      setImgVer((v) => v + 1);
+    };
+    placed.src = dataUrl;
   };
 
   const selectSubject = async () => {
@@ -2405,7 +2493,7 @@ function FileBar({
       <button style={btn} onClick={() => fileRef.current?.click()}>
         Open .neuclip
       </button>
-      <button style={btn} disabled={!hasImage} onClick={onSave}>
+      <button style={btn} disabled={!hasImage} onClick={onSave} title="Save project (Cmd/Ctrl+S)">
         Save .neuclip
       </button>
       <span style={{ width: 1, height: 16, background: "#2a2f37" }} />

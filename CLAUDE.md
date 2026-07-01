@@ -233,6 +233,17 @@ control signal — the **edited** rig, not the raw extraction, becomes the contr
   (`sidecar_port`), and **kills the child on window close** (no orphans).
 - `/health` returns `{ status, app, device, gpu_name, cuda, torch }`.
 
+## Keyboard shortcuts (Photoshop-aligned, `canvas/canvasStage.tsx`)
+Tools: **V** Move · **M** Smart-select · **Shift+L** cycle Lasso (free/poly/magnetic) · **H** Hand
+(pan) · Space-drag / middle-drag = temporary pan. Lasso/pen: **Enter**/double-click/click-origin
+close · **Backspace** drop last anchor · **Esc** cancel · **`[` `]`** magnetic Width.
+View: **Cmd/Ctrl +/−** zoom · **Cmd/Ctrl+0** fit · **Cmd/Ctrl+1** 100% · wheel = zoom-to-cursor.
+Selection: **Cmd/Ctrl+A** select-all · **Cmd/Ctrl+D** deselect · **Cmd/Ctrl+Shift+I** invert.
+Layers/doc: **Cmd/Ctrl+J** layer-via-copy (selection→new movable layer, `layerFromSelection`) ·
+**Delete/Backspace** delete selected layer(s) (when any selected & not mid lasso/pen) ·
+**Cmd/Ctrl+S** save `.neuclip` (`saveProject`, preventDefaults the browser save) ·
+**Cmd/Ctrl+Z / Shift+Z / Ctrl+Y** undo/redo (zoom/pan stay off the stack).
+
 ## Conventions / decisions log
 - **Device selection** (`sidecar/app/device.py`): `cuda` if `torch.cuda.is_available()`
   else `cpu`. `gpu_name` from `torch.cuda.get_device_name(0)` when present. torch is
