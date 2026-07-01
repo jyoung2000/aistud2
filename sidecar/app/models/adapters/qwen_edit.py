@@ -22,7 +22,7 @@ def build_payload(crop_rgb, crop_mask, prompt, params, reference_rgb=None, refer
         payload["image_2"] = _u(reference_rgb, "RGB")
         if reference_role:
             payload["reference_role"] = reference_role
-    for k in ("num_inference_steps", "guidance_scale", "seed"):
+    for k in ("num_inference_steps", "guidance_scale", "seed", "control_strength"):
         if params.get(k) is not None:
             payload[k] = params[k]
     return payload

@@ -20,7 +20,7 @@ _IMAGE_KEYS = ("image", "input_image", "init_image", "image_url", "images")
 _MASK_KEYS = ("mask_image", "mask", "mask_url")
 _PROMPT_KEYS = ("prompt", "text", "instruction")
 _REF_KEYS = ("image_2", "reference_image", "ref_image", "control_image", "images")
-_PASS_PARAMS = ("num_inference_steps", "guidance_scale", "seed", "strength", "negative_prompt")
+_PASS_PARAMS = ("num_inference_steps", "guidance_scale", "seed", "strength", "negative_prompt", "control_strength")
 
 
 def _data_url(arr: np.ndarray, mode: str) -> str:

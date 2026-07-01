@@ -121,6 +121,39 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
   `panels/tunedPrompts.tsx` in the COMPARE pane. STUB synthesis — real vision-grounded
   version is the sidecar `profiles/synth.py` (Phase 8); signature kept stable for the swap.
 
+## Pose Editor (manual skeleton workspace)
+A dedicated view for hand-editing a pose skeleton so the pose model gets the most accurate
+control signal — the **edited** rig, not the raw extraction, becomes the control image.
+- **Model** (`frontend/src/pose/poseModel.ts` ↔ `sidecar/app/pose.py`): `Pose { figures[] }`,
+  `Figure { id, keypoints[], bones[], limbOrder, transform }`, `Keypoint { id, x, y, visible,
+  confidence, group:'body'|'face'|'handL'|'handR' }`. COCO-18 OpenPose body topology; keypoints
+  are **image-space** (contract #1). `limbOrder` = per-limb depth index (higher = further back,
+  drawn first) — the fix for 2D skeletons losing depth (a hand meant to be *behind* the torso).
+- **Extraction** (`sidecar/app/pose.py`): DWpose on the 4070 (`NEUCLIP_DWPOSE`, controlnet_aux),
+  **mannequin A-pose fallback** everywhere (flagged confidence 0 so the UI marks every joint
+  "verify"). `render_control_image` draws the OpenPose colored skeleton on black, back→front by
+  `limbOrder` (cv2 ellipse limbs, numpy fallback) — the exact control image the pose adapters use.
+- **Endpoints:** `/pose/extract` (active image), `/pose/extract_upload` (external reference
+  image), `/pose/render` (control image), `/pose/library` GET/POST/remove (`pose_library.py` →
+  `poses.json`).
+- **Editor** (`frontend/src/pose/PoseEditor.tsx`, amber/AI-side, OpenPose rig colors): rig over a
+  dimmable **ghost** image (accurate posing); zoom/pan via `coords.ts`. Full editing: drag joints,
+  group on/off, whole-rig translate/scale/rotate + **mirror** (reflects about centre, double-
+  mirror = identity), arrow-nudge, joint inspector (mono coords + confidence, low-conf flag),
+  editor-scoped undo/redo. Accuracy helpers: **bone-length lock** (PBD distance solve — limbs hold
+  rest length while a joint drags), **depth forward/back** (per-limb `limbOrder`), **symmetry**
+  edit (L↔R), **onion-skin** of the original pose. Multi-figure (add/dup/delete, blank rig, pose
+  library, load-external-image→extract). Pure ops esbuild-validated.
+- **Wiring:** reachable from the reference **Match pose** role (`panels/referenceBlock.tsx`
+  `PosePanel`): extract from the dropped reference image (or blank rig) → hand-edit → `renderControlImage`
+  → stored on `ReferenceState.pose` + `controlImage`; `poseStrength` → `control_strength` reaches
+  the pose ControlNet adapter (qwen_edit/generic passthrough). `LayerSource.pose` carries the rig
+  for re-editing. (The reference→canvas generate join is reference-milestone M3; the editor already
+  produces exactly the control image + strength that path consumes.)
+- Pose Editor milestones: [x] P1 model+extract+render · [x] P2 view (ghost/rig/zoom-pan) · [x] P3
+  manual editing+inspector+undo · [x] P4 accuracy (bone-lock/depth/symmetry/onion) · [x] P5 multi-
+  figure+blank+library · [x] P6 output wiring (control image + strength + layer source).
+
 ## Launching / packaging
 - **Easy path — single-file app (DEFAULT consumer artifact):** one self-contained binary
   that bundles the FastAPI sidecar + the built web UI; on launch it serves the UI and opens

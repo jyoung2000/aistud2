@@ -8,6 +8,9 @@ import {
   type ModelRefCaps,
   type ReferenceRole,
 } from "../api/referenceModels";
+import { extractPoseFromUpload, renderControlImage } from "../api/pose";
+import { blankPose, type Pose } from "../pose/poseModel";
+import { PoseEditor } from "../pose/PoseEditor";
 
 const AMBER = COLOR_GENERATION;
 const ROLES: ReferenceRole[] = ["replace", "pose", "style"];
@@ -20,7 +23,11 @@ export interface ReferenceState {
   // replace
   blendWithScene: boolean;
   // pose
-  poseStrength: number; // 0..1 (loose -> strict)
+  poseStrength: number; // 0..1 (loose -> strict) → control_strength
+  /** The hand-edited pose skeleton (the EDITED rig is the control signal, not the raw extract). */
+  pose?: Pose;
+  /** Rendered OpenPose control image (data URL) fed to the pose ControlNet adapter. */
+  controlImage?: string;
   preserve: { face: boolean; hair: boolean; outfit: boolean; background: boolean };
   // style
   styleStrength: number; // 0..1
@@ -355,8 +362,8 @@ function RoleControls({
             rightLabel="strict"
           />
         </Field>
-        <Field label="Skeleton preview">
-          <SkeletonStub />
+        <Field label="Pose skeleton (hand-edit for accurate control)">
+          <PosePanel value={value} set={set} />
         </Field>
         <Field label="Preserve from original">
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
@@ -371,8 +378,9 @@ function RoleControls({
           </div>
         </Field>
         <Note>
-          control input: <b>{input ?? "—"}</b> · pose edits send the full subject (M5 cost
-          card)
+          control input: <b>{input ?? "—"}</b> · the rendered control image + strength (
+          {Math.round(value.poseStrength * 100)}%) are sent to the pose ControlNet; the crop
+          expands to the subject's full extent.
         </Note>
       </>
     );
@@ -454,25 +462,156 @@ function Checkbox({
   );
 }
 
-function SkeletonStub() {
+/** Pose skeleton control: extract from the reference image (or a blank rig), hand-edit it in
+ *  the Pose Editor, and render the OpenPose control image the pose adapter consumes. The EDITED
+ *  rig — not the raw extraction — is the control signal (goal of the Pose Editor). */
+function PosePanel({
+  value,
+  set,
+}: {
+  value: ReferenceState;
+  set: (patch: Partial<ReferenceState>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [img, setImg] = useState<{ src: string; w: number; h: number } | null>(null);
+  const [pose, setPose] = useState<Pose | null>(value.pose ?? null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const fileToImage = (file: File) =>
+    new Promise<{ src: string; w: number; h: number }>((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => {
+        const src = String(fr.result);
+        const im = new Image();
+        im.onload = () => res({ src, w: im.naturalWidth, h: im.naturalHeight });
+        im.onerror = rej;
+        im.src = src;
+      };
+      fr.onerror = rej;
+      fr.readAsDataURL(file);
+    });
+
+  const openFromReference = async () => {
+    if (!value.file) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const meta = await fileToImage(value.file);
+      const p = value.pose ?? (await extractPoseFromUpload(meta.src));
+      setImg(meta);
+      setPose(p);
+      setOpen(true);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openBlank = () => {
+    const w = 512;
+    const h = 768;
+    // neutral backdrop so the rig is visible without a reference photo
+    const src =
+      "data:image/svg+xml;base64," +
+      btoa(`<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}'><rect width='100%' height='100%' fill='#1a1d22'/></svg>`);
+    setImg({ src, w, h });
+    setPose(value.pose ?? blankPose(w, h));
+    setOpen(true);
+  };
+
+  const onApply = async (edited: Pose) => {
+    setOpen(false);
+    setPose(edited);
+    if (!img) return;
+    setBusy(true);
+    try {
+      const controlImage = await renderControlImage(edited, img.w, img.h);
+      set({ pose: edited, controlImage });
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <div
-      style={{
-        height: 92,
-        borderRadius: 6,
-        border: `1px dashed ${AMBER}44`,
-        background:
-          "repeating-linear-gradient(45deg, #141009, #141009 8px, #17120a 8px, #17120a 16px)",
-        display: "grid",
-        placeItems: "center",
-        color: "#6b6147",
-        fontSize: 11,
-      }}
-    >
-      DWpose skeleton preview — wired in M4
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div
+        style={{
+          height: 132,
+          borderRadius: 6,
+          border: `1px solid ${AMBER}44`,
+          background: value.controlImage ? "#000" : "#141009",
+          display: "grid",
+          placeItems: "center",
+          overflow: "hidden",
+        }}
+      >
+        {value.controlImage ? (
+          <img
+            src={value.controlImage}
+            alt="pose control"
+            style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}
+          />
+        ) : (
+          <div style={{ color: "#6b6147", fontSize: 11, textAlign: "center", padding: 10 }}>
+            No skeleton yet.<br />
+            Extract one from the reference image, or build a blank rig.
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <button style={poseBtn} disabled={!value.file || busy} onClick={openFromReference}>
+          {busy ? "Working…" : value.pose ? "Edit skeleton" : "Extract & edit skeleton"}
+        </button>
+        <button style={poseBtn} disabled={busy} onClick={openBlank}>
+          Blank rig
+        </button>
+        {value.pose && (
+          <button
+            style={{ ...poseBtn, color: "#e5687a" }}
+            onClick={() => {
+              setPose(null);
+              set({ pose: undefined, controlImage: undefined });
+            }}
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      {!value.file && (
+        <span style={{ fontSize: 10, color: "#6b6147" }}>
+          Drop a pose-reference image above to extract its skeleton, or start from a blank rig.
+        </span>
+      )}
+      {err && <span style={{ fontSize: 10.5, color: "#e0857a" }}>{err}</span>}
+
+      {open && img && pose && (
+        <PoseEditor
+          open={open}
+          imageSrc={img.src}
+          width={img.w}
+          height={img.h}
+          pose={pose}
+          onApply={onApply}
+          onClose={() => setOpen(false)}
+        />
+      )}
     </div>
   );
 }
+
+const poseBtn: React.CSSProperties = {
+  border: `1px solid ${AMBER}66`,
+  background: "#1c1710",
+  color: "#f4d9a6",
+  borderRadius: 5,
+  padding: "5px 10px",
+  cursor: "pointer",
+  fontSize: 11,
+};
 
 function Note({ children }: { children: React.ReactNode }) {
   return (

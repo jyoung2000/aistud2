@@ -48,6 +48,9 @@ export interface LayerSource {
   params: Record<string, number>;
   sendRegion: Region;
   reference?: RefSpec;
+  /** Pose-role edits carry the hand-edited skeleton so the rig is re-editable on later passes
+   *  (stored as the Pose JSON; see pose/poseModel.ts). control_strength lives in params. */
+  pose?: unknown;
 }
 
 export interface HarmonizeSpec {
