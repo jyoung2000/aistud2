@@ -150,3 +150,100 @@ export function keypointPos(fig: Figure, kp: Keypoint): { x: number; y: number }
 export function clonePose(p: Pose): Pose {
   return JSON.parse(JSON.stringify(p));
 }
+
+// --- editing ops (pure; the editor commits these to its undo stack) ----------
+
+/** Left↔right body-index pairs, for mirror + symmetry editing. */
+export const LR_PAIRS: [number, number][] = [
+  [2, 5], [3, 6], [4, 7], [8, 11], [9, 12], [10, 13], [14, 15], [16, 17],
+];
+
+function figureById(p: Pose, figId: string): Figure | undefined {
+  return p.figures.find((f) => f.id === figId);
+}
+
+/** Set a keypoint's raw (pre-transform) position, clamped to the image. */
+export function moveKeypointRaw(
+  p: Pose, figId: string, kpId: string, x: number, y: number, w: number, h: number
+): Pose {
+  const next = clonePose(p);
+  const k = figureById(next, figId)?.keypoints.find((kk) => kk.id === kpId);
+  if (!k) return p;
+  k.x = Math.min(Math.max(x, 0), w);
+  k.y = Math.min(Math.max(y, 0), h);
+  return next;
+}
+
+/** Nudge the raw position of a keypoint by (dx,dy) image px. */
+export function nudgeKeypoint(
+  p: Pose, figId: string, kpId: string, dx: number, dy: number, w: number, h: number
+): Pose {
+  const k = figureById(p, figId)?.keypoints.find((kk) => kk.id === kpId);
+  if (!k) return p;
+  return moveKeypointRaw(p, figId, kpId, k.x + dx, k.y + dy, w, h);
+}
+
+export function setKeypointVisible(p: Pose, figId: string, kpId: string, visible: boolean): Pose {
+  const next = clonePose(p);
+  const k = figureById(next, figId)?.keypoints.find((kk) => kk.id === kpId);
+  if (!k) return p;
+  k.visible = visible;
+  return next;
+}
+
+/** Toggle a whole group (body/face/hands) on or off for a figure. */
+export function setGroupVisible(p: Pose, figId: string, group: KeypointGroup, visible: boolean): Pose {
+  const next = clonePose(p);
+  const fig = figureById(next, figId);
+  if (!fig) return p;
+  for (const k of fig.keypoints) if (k.group === group) k.visible = visible;
+  return next;
+}
+
+export function groupVisible(fig: Figure, group: KeypointGroup): boolean {
+  const inGroup = fig.keypoints.filter((k) => k.group === group);
+  return inGroup.length > 0 && inGroup.some((k) => k.visible);
+}
+
+/** Update a figure's whole-rig transform (merge). */
+export function updateTransform(p: Pose, figId: string, patch: Partial<PoseTransform>): Pose {
+  const next = clonePose(p);
+  const fig = figureById(next, figId);
+  if (!fig) return p;
+  fig.transform = { ...fig.transform, ...patch };
+  return next;
+}
+
+/** Mirror a figure L↔R: reflect raw x about the figure centre and swap left/right joints so
+ *  limb colors/labels stay anatomically correct. Bakes any transform.rotation-free flip into
+ *  the raw points (transform is left intact for tx/ty/scale). */
+export function mirrorFigure(p: Pose, figId: string): Pose {
+  const next = clonePose(p);
+  const fig = figureById(next, figId);
+  if (!fig) return p;
+  const c = figureCenter(fig);
+  for (const k of fig.keypoints) k.x = 2 * c.x - k.x;
+  // swap paired positions/visibility so the "left" id holds the now-left joint
+  const at = (i: number) => fig.keypoints.find((k) => k.id.endsWith(`:body:${i}`));
+  for (const [a, b] of LR_PAIRS) {
+    const ka = at(a);
+    const kb = at(b);
+    if (!ka || !kb) continue;
+    [ka.x, kb.x] = [kb.x, ka.x];
+    [ka.y, kb.y] = [kb.y, ka.y];
+    [ka.visible, kb.visible] = [kb.visible, ka.visible];
+    [ka.confidence, kb.confidence] = [kb.confidence, ka.confidence];
+  }
+  return next;
+}
+
+/** Figure counterpart of a body keypoint id under L↔R mirroring (for symmetry editing). */
+export function mirrorPartnerId(fig: Figure, kpId: string): string | null {
+  const i = bodyIndex(kpId);
+  if (i === null) return null;
+  for (const [a, b] of LR_PAIRS) {
+    if (i === a) return fig.keypoints.find((k) => k.id.endsWith(`:body:${b}`))?.id ?? null;
+    if (i === b) return fig.keypoints.find((k) => k.id.endsWith(`:body:${a}`))?.id ?? null;
+  }
+  return null;
+}

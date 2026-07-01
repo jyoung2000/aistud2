@@ -9,14 +9,25 @@ import {
 } from "../canvas/coords";
 import {
   BODY_LIMBS,
+  BODY_NAMES,
   LIMB_COLORS,
   boneKey,
+  bodyIndex,
   clonePose,
   figureCenter,
+  groupVisible,
   keypointPos,
+  mirrorFigure,
+  mirrorPartnerId,
+  moveKeypointRaw,
+  nudgeKeypoint,
   pointColor,
   rgb,
+  setGroupVisible,
+  setKeypointVisible,
+  updateTransform,
   type Figure,
+  type KeypointGroup,
   type Pose,
 } from "./poseModel";
 
@@ -61,6 +72,8 @@ export function PoseEditor({
   const [activeFig, setActiveFig] = useState<string>(() => initialPose.figures[0]?.id ?? "fig1");
   const [selected, setSelected] = useState<string | null>(null);
 
+  const [symmetry, setSymmetry] = useState(false);
+
   const dragRef = useRef<
     | { kind: "pan"; startView: ViewTransform; sx: number; sy: number }
     | { kind: "joint"; id: string; figId: string }
@@ -68,12 +81,56 @@ export function PoseEditor({
   >(null);
   const spaceRef = useRef(false);
 
+  // editor-scoped undo/redo (pose snapshots; view/ghost stay off the stack)
+  const undoRef = useRef<Pose[]>([]);
+  const redoRef = useRef<Pose[]>([]);
+  const dragSnapRef = useRef<Pose | null>(null);
+
+  const pushUndo = useCallback((snap: Pose) => {
+    undoRef.current.push(snap);
+    if (undoRef.current.length > 100) undoRef.current.shift();
+    redoRef.current = [];
+  }, []);
+
+  /** Apply a discrete edit and record it for undo. */
+  const commit = useCallback(
+    (fn: (p: Pose) => Pose) => {
+      setPose((p) => {
+        const next = fn(p);
+        if (next === p) return p;
+        pushUndo(clonePose(p));
+        return next;
+      });
+    },
+    [pushUndo]
+  );
+
+  const undo = useCallback(() => {
+    const prev = undoRef.current.pop();
+    if (!prev) return;
+    setPose((p) => {
+      redoRef.current.push(clonePose(p));
+      return prev;
+    });
+  }, []);
+
+  const redo = useCallback(() => {
+    const nxt = redoRef.current.pop();
+    if (!nxt) return;
+    setPose((p) => {
+      undoRef.current.push(clonePose(p));
+      return nxt;
+    });
+  }, []);
+
   // Reset editable pose whenever we (re)open with a new source pose.
   useEffect(() => {
     if (open) {
       setPose(clonePose(initialPose));
       setActiveFig(initialPose.figures[0]?.id ?? "fig1");
       setSelected(null);
+      undoRef.current = [];
+      redoRef.current = [];
     }
   }, [open, initialPose]);
 
@@ -186,6 +243,7 @@ export function PoseEditor({
     if (hit) {
       setActiveFig(hit.figId);
       setSelected(hit.id);
+      dragSnapRef.current = clonePose(pose); // recorded on drag end if changed
       dragRef.current = { kind: "joint", id: hit.id, figId: hit.figId };
     } else {
       setSelected(null);
@@ -202,10 +260,23 @@ export function PoseEditor({
     if (d.kind === "pan") {
       setView({ ...d.startView, x: d.startView.x + (sx - d.sx), y: d.startView.y + (sy - d.sy) });
     } else {
-      // Drag a joint: convert screen→image, then invert the figure transform so we store the
-      // raw (pre-transform) keypoint. For the P2 identity transform this is a direct map.
+      // Drag a joint: screen→image gives the new raw position (figure transform is identity
+      // during hand-posing; whole-rig transform is applied separately). Symmetry mirrors the
+      // move to the L↔R partner about the figure centre.
       const img = screenToImage({ x: sx, y: sy }, view);
-      setPose((p) => moveKeypointRaw(p, d.figId, d.id, img.x, img.y, width, height));
+      setPose((p) => {
+        let next = moveKeypointRaw(p, d.figId, d.id, img.x, img.y, width, height);
+        if (symmetry) {
+          const fig = next.figures.find((f) => f.id === d.figId);
+          const partner = fig ? mirrorPartnerId(fig, d.id) : null;
+          if (fig && partner) {
+            const c = figureCenter(fig);
+            const moved = fig.keypoints.find((k) => k.id === d.id)!;
+            next = moveKeypointRaw(next, d.figId, partner, 2 * c.x - moved.x, moved.y, width, height);
+          }
+        }
+        return next;
+      });
     }
   };
 
@@ -215,15 +286,59 @@ export function PoseEditor({
     } catch {
       /* noop */
     }
+    if (dragRef.current?.kind === "joint" && dragSnapRef.current) {
+      const snap = dragSnapRef.current;
+      // record the pre-drag state only if something actually moved
+      setPose((cur) => {
+        if (JSON.stringify(cur) !== JSON.stringify(snap)) pushUndo(snap);
+        return cur;
+      });
+    }
+    dragSnapRef.current = null;
     dragRef.current = null;
   };
 
-  // space = temporary pan; Esc = cancel
+  // keyboard: space=pan, arrows=nudge, undo/redo, delete=hide joint, Esc=cancel
   useEffect(() => {
     if (!open) return;
     const down = (e: KeyboardEvent) => {
+      const typing = (e.target as HTMLElement)?.tagName === "INPUT";
       if (e.code === "Space") spaceRef.current = true;
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") return onClose();
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if (meta && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        redo();
+        return;
+      }
+      if (typing || !selected) return;
+      const step = e.shiftKey ? 10 : 1;
+      const arrows: Record<string, [number, number]> = {
+        ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step],
+      };
+      if (arrows[e.key]) {
+        e.preventDefault();
+        const [dx, dy] = arrows[e.key];
+        commit((p) => {
+          let n = nudgeKeypoint(p, activeFig, selected, dx, dy, width, height);
+          if (symmetry) {
+            const fig = n.figures.find((f) => f.id === activeFig);
+            const partner = fig ? mirrorPartnerId(fig, selected) : null;
+            if (fig && partner) n = nudgeKeypoint(n, activeFig, partner, -dx, dy, width, height);
+          }
+          return n;
+        });
+      }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        commit((p) => setKeypointVisible(p, activeFig, selected, false));
+      }
     };
     const up = (e: KeyboardEvent) => {
       if (e.code === "Space") spaceRef.current = false;
@@ -234,13 +349,18 @@ export function PoseEditor({
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, [open, onClose]);
+  }, [open, onClose, undo, redo, commit, selected, activeFig, symmetry, width, height]);
 
   const fit = () => setView(fitTransform(width, height, vp.w, vp.h));
 
   const lowConf = useMemo(
     () => pose.figures.reduce((n, f) => n + f.keypoints.filter((k) => k.visible && k.confidence < 0.35).length, 0),
     [pose]
+  );
+  const activeFigure = useMemo(() => pose.figures.find((f) => f.id === activeFig), [pose, activeFig]);
+  const selectedKp = useMemo(
+    () => activeFigure?.keypoints.find((k) => k.id === selected) ?? null,
+    [activeFigure, selected]
   );
 
   if (!open) return null;
@@ -297,17 +417,36 @@ export function PoseEditor({
           </span>
         </div>
 
-        {/* canvas */}
-        <div ref={wrapRef} style={{ position: "relative", flex: 1, minHeight: 0, background: "#0b0d10" }}>
-          <canvas
-            ref={canvasRef}
-            onWheel={onWheel}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={endDrag}
-            onPointerCancel={endDrag}
-            onContextMenu={(e) => e.preventDefault()}
-            style={{ display: "block", touchAction: "none", cursor: "crosshair" }}
+        {/* canvas + inspector */}
+        <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+          <div ref={wrapRef} style={{ position: "relative", flex: 1, minHeight: 0, background: "#0b0d10" }}>
+            <canvas
+              ref={canvasRef}
+              onWheel={onWheel}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={endDrag}
+              onPointerCancel={endDrag}
+              onContextMenu={(e) => e.preventDefault()}
+              style={{ display: "block", touchAction: "none", cursor: "crosshair" }}
+            />
+          </div>
+          <PoseInspector
+            figure={activeFigure ?? null}
+            selected={selectedKp}
+            symmetry={symmetry}
+            canUndo={undoRef.current.length > 0}
+            canRedo={redoRef.current.length > 0}
+            onUndo={undo}
+            onRedo={redo}
+            onSetSymmetry={setSymmetry}
+            onToggleGroup={(g, vis) => activeFigure && commit((p) => setGroupVisible(p, activeFigure.id, g, vis))}
+            onTransform={(patch) => activeFigure && commit((p) => updateTransform(p, activeFigure.id, patch))}
+            onMirror={() => activeFigure && commit((p) => mirrorFigure(p, activeFigure.id))}
+            onDeleteJoint={() =>
+              selectedKp && activeFigure && commit((p) => setKeypointVisible(p, activeFigure.id, selectedKp.id, false))
+            }
+            onRestoreJoint={(id) => activeFigure && commit((p) => setKeypointVisible(p, activeFigure.id, id, true))}
           />
         </div>
       </div>
@@ -315,26 +454,188 @@ export function PoseEditor({
   );
 }
 
-// --- pose ops ---------------------------------------------------------------
+function PoseInspector({
+  figure,
+  selected,
+  symmetry,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+  onSetSymmetry,
+  onToggleGroup,
+  onTransform,
+  onMirror,
+  onDeleteJoint,
+  onRestoreJoint,
+}: {
+  figure: Figure | null;
+  selected: { id: string; x: number; y: number; confidence: number; visible: boolean } | null;
+  symmetry: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+  onSetSymmetry: (v: boolean) => void;
+  onToggleGroup: (g: KeypointGroup, visible: boolean) => void;
+  onTransform: (patch: { scale?: number; rotation?: number }) => void;
+  onMirror: () => void;
+  onDeleteJoint: () => void;
+  onRestoreJoint: (id: string) => void;
+}) {
+  const groups: KeypointGroup[] = ["body", "face", "handL", "handR"];
+  const hidden = figure?.keypoints.filter((k) => !k.visible) ?? [];
+  const label = (id: string) => {
+    const i = bodyIndex(id);
+    return i === null ? id.split(":").slice(1).join(" ") : BODY_NAMES[i] ?? `#${i}`;
+  };
+  return (
+    <aside style={inspector}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <SectionLabel>HISTORY</SectionLabel>
+        <div style={{ flex: 1 }} />
+        <button style={miniBtn} disabled={!canUndo} onClick={onUndo} title="Undo (Cmd/Ctrl+Z)">↶</button>
+        <button style={miniBtn} disabled={!canRedo} onClick={onRedo} title="Redo (Shift+Cmd/Ctrl+Z)">↷</button>
+      </div>
 
-/** Set a keypoint's raw (pre-transform) position, clamped to the image. */
-function moveKeypointRaw(
-  p: Pose,
-  figId: string,
-  kpId: string,
-  x: number,
-  y: number,
-  w: number,
-  h: number
-): Pose {
-  const next = clonePose(p);
-  const fig = next.figures.find((f) => f.id === figId);
-  if (!fig) return p;
-  const k = fig.keypoints.find((kk) => kk.id === kpId);
-  if (!k) return p;
-  k.x = Math.min(Math.max(x, 0), w);
-  k.y = Math.min(Math.max(y, 0), h);
-  return next;
+      <SectionLabel>SELECTED JOINT</SectionLabel>
+      {selected ? (
+        <div style={{ fontSize: 11, color: "#cbd5e1", lineHeight: 1.6 }}>
+          <div style={{ color: "#e2e8f0", fontWeight: 600 }}>{label(selected.id)}</div>
+          <div style={{ fontFamily: "ui-monospace, monospace", color: "#94a3b8" }}>
+            x {selected.x.toFixed(1)} · y {selected.y.toFixed(1)}
+          </div>
+          <div style={{ color: selected.confidence < 0.35 ? "#e0b060" : "#7d8694" }}>
+            confidence {(selected.confidence * 100).toFixed(0)}%
+            {selected.confidence < 0.35 ? " — verify" : ""}
+          </div>
+          <div style={{ color: "#5c6473", marginTop: 2 }}>arrow keys nudge · Shift = ×10 · Del hides</div>
+          <button style={{ ...miniBtn, marginTop: 6, color: "#e5687a" }} onClick={onDeleteJoint}>Hide joint</button>
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: "#5c6473" }}>Click a joint to inspect / edit.</div>
+      )}
+
+      <SectionLabel>GROUPS</SectionLabel>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {groups.map((g) => {
+          const present = figure?.keypoints.some((k) => k.group === g) ?? false;
+          const on = figure ? groupVisible(figure, g) : false;
+          return (
+            <button
+              key={g}
+              disabled={!present}
+              onClick={() => onToggleGroup(g, !on)}
+              style={{
+                ...chip,
+                opacity: present ? 1 : 0.35,
+                borderColor: on ? AMBER : "#2b313c",
+                color: on ? "#f4d9a6" : "#8a93a2",
+              }}
+              title={present ? `Toggle ${g}` : `${g} not present`}
+            >
+              {g}
+            </button>
+          );
+        })}
+      </div>
+
+      <SectionLabel>WHOLE-RIG TRANSFORM</SectionLabel>
+      {figure && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <Slider
+            label="scale"
+            min={0.3}
+            max={2.5}
+            step={0.01}
+            value={figure.transform.scale}
+            onChange={(v) => onTransform({ scale: v })}
+            fmt={(v) => `${Math.round(v * 100)}%`}
+          />
+          <Slider
+            label="rotate"
+            min={-180}
+            max={180}
+            step={1}
+            value={figure.transform.rotation}
+            onChange={(v) => onTransform({ rotation: v })}
+            fmt={(v) => `${Math.round(v)}°`}
+          />
+          <div style={{ display: "flex", gap: 6 }}>
+            <button style={miniBtn} onClick={onMirror} title="Mirror left↔right">⇄ Mirror</button>
+            <button
+              style={miniBtn}
+              onClick={() => onTransform({ scale: 1, rotation: 0 })}
+              title="Reset transform"
+            >
+              Reset
+            </button>
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "#cbd5e1" }}>
+            <input type="checkbox" checked={symmetry} onChange={(e) => onSetSymmetry(e.target.checked)} />
+            Symmetry edit (mirror joint moves L↔R)
+          </label>
+        </div>
+      )}
+
+      {hidden.length > 0 && (
+        <>
+          <SectionLabel>HIDDEN JOINTS ({hidden.length})</SectionLabel>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+            {hidden.map((k) => (
+              <button key={k.id} style={{ ...chip, borderColor: "#2b313c" }} onClick={() => onRestoreJoint(k.id)}>
+                + {label(k.id)}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </aside>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ fontSize: 10, letterSpacing: 1, color: "#64748b", fontWeight: 700, marginTop: 4 }}>
+      {children}
+    </div>
+  );
+}
+
+function Slider({
+  label,
+  min,
+  max,
+  step,
+  value,
+  onChange,
+  fmt,
+}: {
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (v: number) => void;
+  fmt: (v: number) => string;
+}) {
+  return (
+    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "#cbd5e1" }}>
+      <span style={{ width: 42 }}>{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        style={{ flex: 1, accentColor: AMBER }}
+      />
+      <span style={{ width: 40, textAlign: "right", color: "#7d8694", fontFamily: "ui-monospace, monospace" }}>
+        {fmt(value)}
+      </span>
+    </label>
+  );
 }
 
 // --- drawing ----------------------------------------------------------------
@@ -482,4 +783,33 @@ const applyBtn: React.CSSProperties = {
   padding: "6px 16px",
   cursor: "pointer",
   fontWeight: 700,
+};
+const inspector: React.CSSProperties = {
+  width: 232,
+  flex: "0 0 232px",
+  borderLeft: "1px solid #20242b",
+  background: "#0f1216",
+  padding: "10px 12px",
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  overflowY: "auto",
+};
+const miniBtn: React.CSSProperties = {
+  border: "1px solid #2a2f37",
+  background: "#181c22",
+  color: "#cbd5e1",
+  borderRadius: 5,
+  padding: "4px 9px",
+  cursor: "pointer",
+  fontSize: 11,
+};
+const chip: React.CSSProperties = {
+  border: "1px solid #2b313c",
+  background: "#181c22",
+  color: "#cbd5e1",
+  borderRadius: 5,
+  padding: "3px 8px",
+  cursor: "pointer",
+  fontSize: 11,
 };
