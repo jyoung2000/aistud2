@@ -209,14 +209,20 @@ control signal — the **edited** rig, not the raw extraction, becomes the contr
   `api/referenceModels.ts` `loadModels(force?)` + `modelsMeta()`; ⚙ Settings shows a
   "Refresh model list" + live count.
 
-## First-run onboarding (IMPLEMENTED)
-- `frontend/src/panels/onboarding.tsx` — a stepped overlay shown once on first launch (gated by
-  `localStorage` `neuclip.onboarded.v2`, mounted from `App.tsx` after the sidecar connects).
-  Steps: welcome → **API keys** (WaveSpeed + Anthropic, `Save & test connection` runs
-  `loadModels(true)` and reports the live-model count / error / device) → 6-card **UI walkthrough**
-  (open+auto-separate, select tools + cyan-ants/boolean-ops, amber inspector + crop-only send,
-  compare/shootout, **import & flatten-for-AI**, layers + Move tool + export) → done. Re-openable via
-  ⚙ Settings ▸ **Show walkthrough**. Cyan=selection / amber=AI messaging is reinforced throughout.
+## First-run onboarding (IMPLEMENTED — spotlight tour)
+- `frontend/src/panels/onboarding.tsx` — an interactive **coach-mark tour** shown once on first
+  launch (gated by `localStorage` `neuclip.onboarded.v3`, mounted from `App.tsx` after the sidecar
+  connects). Centered panels for welcome + **API keys** (`Save & test connection` runs
+  `loadModels(true)`, reports live-model count / device) + done; between them it **spotlights the
+  real UI elements** one at a time — dims the screen with a box-shadow cutout + pulsing ring around
+  the target and anchors a callout beside it (placement auto-picks the side with room). Steps
+  target `data-tour` anchors: `open` (ZoomBar Open button), `tools` (the Move/Select/Lasso/Pen/Hand
+  group, each explained with icon+shortcut), `filebar` (import/flatten/auto-separate/crop/extend),
+  `inspector` (model + reference/pose + LoRA + compare), `generate` (prompt + Generate), `settings`
+  (header ⚙). All anchors render before an image is loaded, so the tour works on a blank canvas.
+  Arrow-key / Enter navigation; re-openable via ⚙ Settings ▸ **Show walkthrough**. Cyan=selection /
+  amber=AI reinforced throughout. Anchors are `data-tour="…"` attributes on the live components
+  (canvasStage ZoomBar/FileBar/GenerateBar, inspectorPipeline aside, App settings button).
 
 ## Sidecar <-> Tauri handshake (Phase 0, IMPLEMENTED)
 - Sidecar binds a port: tries `NEUCLIP_SIDECAR_PORT` (default 8756); on conflict it

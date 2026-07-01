@@ -94,6 +94,7 @@ export function InspectorPipeline() {
 
   return (
     <aside
+      data-tour="inspector"
       style={{
         width: 320,
         flex: "0 0 320px",

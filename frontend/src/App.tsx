@@ -56,6 +56,7 @@ export default function App() {
       >
         {APP_NAME}
         <button
+          data-tour="settings"
           onClick={() => setSettingsOpen(true)}
           title="Settings (API keys, compute)"
           style={{

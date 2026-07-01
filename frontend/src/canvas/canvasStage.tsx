@@ -2169,6 +2169,7 @@ function GenerateBar({
       : null;
   return (
     <div
+      data-tour="generate"
       style={{
         borderTop: `1px solid ${A}33`,
         background: "#15120b",
@@ -2373,6 +2374,7 @@ function FileBar({
   ];
   return (
     <div
+      data-tour="filebar"
       style={{
         height: 32,
         display: "flex",
@@ -2715,10 +2717,11 @@ function ZoomBar({
         hidden
         onChange={(e) => e.target.files?.[0] && onOpen(e.target.files[0])}
       />
-      <button style={btn} onClick={() => fileRef.current?.click()}>
+      <button data-tour="open" style={btn} onClick={() => fileRef.current?.click()}>
         Open image
       </button>
       <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
+      <span data-tour="tools" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
       <button style={toolBtn(tool === "move")} onClick={() => onTool("move")} title="Move / select layers (V)">
         ✥ Move
       </button>
@@ -2754,6 +2757,7 @@ function ZoomBar({
       <button style={toolBtn(tool === "hand")} onClick={() => onTool("hand")} title="Hand — pan (H, or hold Space)">
         ✋ Hand
       </button>
+      </span>
       <button
         style={btn}
         disabled={!canRefine || busy}
