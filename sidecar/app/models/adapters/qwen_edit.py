@@ -1,7 +1,10 @@
 """Qwen-Image-Edit / Edit-Plus adapter (instruction-based; multi-image reference).
 
-Confirmed slug: wavespeed-ai/qwen-image/edit-2511 (registry). Instruction models edit the
-whole crop from the prompt; a reference image (replace/pose) is attached as a second image.
+Slugs + field names verified from the WaveSpeed model cards (2026-07):
+`wavespeed-ai/qwen-image/edit-2511` and `wavespeed-ai/qwen-image/edit-plus` both take
+prompt, images (an ARRAY — the crop first, any reference image second), seed,
+output_format, enable_base64_output, enable_sync_mode. Instruction models edit the whole
+crop from the prompt; a reference image (replace/pose) rides along as images[1].
 """
 from __future__ import annotations
 
@@ -16,13 +19,12 @@ def _u(arr, mode):
 
 
 def build_payload(crop_rgb, crop_mask, prompt, params, reference_rgb=None, reference_role=None) -> dict:
-    payload = {"prompt": prompt, "image": _u(crop_rgb, "RGB")}
+    images = [_u(crop_rgb, "RGB")]
     if reference_rgb is not None:
-        # multi-image: the reference subject as image_2 (replace) / control (pose)
-        payload["image_2"] = _u(reference_rgb, "RGB")
-        if reference_role:
-            payload["reference_role"] = reference_role
-    for k in ("num_inference_steps", "guidance_scale", "seed", "control_strength"):
-        if params.get(k) is not None:
-            payload[k] = params[k]
+        # multi-image: the reference (replace subject / pose control image) as images[1];
+        # the role shapes the synthesized prompt, not the payload (no such API field).
+        images.append(_u(reference_rgb, "RGB"))
+    payload = {"prompt": prompt, "images": images}
+    if params.get("seed") is not None:
+        payload["seed"] = params["seed"]
     return payload

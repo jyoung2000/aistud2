@@ -227,9 +227,41 @@ export function rectsIntersect(a: LayerBounds, b: LayerBounds, contained = false
 
 let _idc = 0;
 export function newLayerId(): string {
-  // monotonic — Math.random is unavailable in some contexts; a counter is deterministic.
+  // Globally unique — a module counter resets on app reload and collides with ids restored
+  // from a saved project, corrupting the layer-image cache.
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `L_${crypto.randomUUID()}`;
+  }
   _idc += 1;
-  return `L${_idc}_${_idc * 2654435761 % 100000}`;
+  return `L_${Date.now().toString(36)}_${_idc}`;
+}
+
+/**
+ * Belt-and-braces for project open: re-map any duplicate layer ids (e.g. a file edited by
+ * hand, or ids from an old counter-based build) to fresh unique ids, keeping the image
+ * cache and group membership consistent.
+ */
+export function remapDuplicateLayerIds(
+  layers: Layer[],
+  layerImgs: Map<string, HTMLImageElement>,
+  groups: LayerGroup[]
+): void {
+  const seen = new Set<string>();
+  for (const L of layers) {
+    if (seen.has(L.id)) {
+      const oldId = L.id;
+      const nid = newLayerId();
+      if (import.meta.env.DEV) console.warn(`duplicate layer id ${oldId} → remapped to ${nid}`);
+      const img = layerImgs.get(oldId);
+      if (img && !layerImgs.has(nid)) layerImgs.set(nid, img);
+      for (const g of groups) {
+        const i = g.layerIds.indexOf(oldId);
+        if (i >= 0) g.layerIds[i] = nid;
+      }
+      L.id = nid;
+    }
+    seen.add(L.id);
+  }
 }
 
 const BLEND_OP: Record<BlendMode, GlobalCompositeOperation> = {

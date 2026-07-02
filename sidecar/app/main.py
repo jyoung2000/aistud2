@@ -513,7 +513,10 @@ def generate(body: GenerateIn) -> dict:
         job.mode = "mock"
         job.status = "completed"
         job.result_png = imaging.png_to_base64(out, "RGB")
-        return _job_payload(job)
+        payload = _job_payload(job)
+        # terminal + result served in this very response → drop all heavy state now
+        job.release_heavy(drop_result=True)
+        return payload
 
     try:
         reference_rgb = None
@@ -535,10 +538,12 @@ def generate(body: GenerateIn) -> dict:
     except KeyError as e:
         job.status = "failed"
         job.error = str(e)
+        job.release_heavy()
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         job.status = "failed"
         job.error = str(e)
+        job.release_heavy()
         raise HTTPException(status_code=502, detail=f"submit failed: {e}")
 
 
@@ -575,7 +580,11 @@ def poll_generation(body: PollIn) -> dict:
     elif status == "failed":
         job.status = "failed"
         job.error = err
-    return _job_payload(job)
+    payload = _job_payload(job)
+    if job.status in ("completed", "failed"):
+        # composited (or dead): buffers + the served result are no longer needed
+        job.release_heavy(drop_result=True)
+    return payload
 
 
 class FinishIn(BaseModel):

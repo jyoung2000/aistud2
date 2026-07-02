@@ -1,7 +1,11 @@
 """Model registry — each model declares its capabilities + endpoint slug + which adapter
 builds its request (contract #6). The inspector reads these flags to show the right
-controls (mask vs reference slot vs plain instruction). Slugs marked TODO must be confirmed
-from each model card's API tab; `qwen-image/edit-2511` is confirmed.
+controls (mask vs reference slot vs plain instruction).
+
+Slug verification (2026-07, from the WaveSpeed docs/model cards):
+confirmed — qwen-image/edit-2511, qwen-image/edit-plus, flux-fill-dev, flux-kontext-dev.
+ideogram-ai/ideogram-character: slug verified but its inpaint field names are not, so it
+stays confirmed_slug=False (the UI marks it "unverified").
 """
 from __future__ import annotations
 
@@ -33,11 +37,6 @@ class ModelSpec:
 
 REGISTRY: List[ModelSpec] = [
     ModelSpec(
-        "flux-fill", "FLUX Fill", flux_fill.SLUG, "inpaint", 1.2,
-        needs_mask=True, instruction_based=False,
-        reference_roles=[], reference_inputs={}, build=flux_fill.build_payload,
-    ),
-    ModelSpec(
         "qwen-image-edit-2511", "Qwen-Image-Edit", "qwen-image/edit-2511", "instruction", 0.8,
         needs_mask=False, instruction_based=True,
         reference_roles=["replace"], reference_inputs={"replace": "multi_image"},
@@ -48,15 +47,23 @@ REGISTRY: List[ModelSpec] = [
         needs_mask=False, instruction_based=True,
         reference_roles=["replace", "pose"],
         reference_inputs={"replace": "multi_image", "pose": "multi_image"},
-        build=qwen_edit.build_payload, supports_lora=True, max_loras=3,
+        build=qwen_edit.build_payload, confirmed_slug=True, supports_lora=True, max_loras=3,
     ),
     ModelSpec(
-        "flux-kontext", "FLUX Kontext", "flux-kontext/dev", "instruction", 1.0,
+        "flux-fill", "FLUX Fill", flux_fill.SLUG, "inpaint", 1.2,
+        needs_mask=True, instruction_based=False,
+        reference_roles=[], reference_inputs={}, build=flux_fill.build_payload,
+        confirmed_slug=True,
+    ),
+    ModelSpec(
+        "flux-kontext", "FLUX Kontext", kontext.SLUG, "instruction", 1.0,
         needs_mask=False, instruction_based=True,
         reference_roles=[], reference_inputs={}, build=kontext.build_payload,
+        confirmed_slug=True,
     ),
     ModelSpec(
-        "ideogram-character", "Ideogram Character", "ideogram/character", "reference/character", 1.1,
+        # slug verified; inpaint/mask field names still unverified → confirmed_slug=False
+        "ideogram-character", "Ideogram Character", ideogram_char.SLUG, "reference/character", 1.1,
         needs_mask=False, instruction_based=False,
         reference_roles=["replace"], reference_inputs={"replace": "multi_image"},
         build=ideogram_char.build_payload,
@@ -103,6 +110,9 @@ def public_list(api_key: Optional[str] = None, force: bool = False) -> dict:
     { models, dynamic_error, dynamic_count } so the UI can surface a "couldn't refresh" note.
     """
     static = _static_public()
+    # confirmed-slug models first — the picker defaults to the first entry, and an
+    # unconfirmed default would 404 the user's first real-key generation.
+    static.sort(key=lambda m: not m["confirmed_slug"])
     seen = {m["slug"] for m in static}
     seen.update(m["id"] for m in static)
     dynamic_error = None

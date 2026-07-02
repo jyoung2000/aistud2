@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { COLOR_GENERATION } from "../constants";
 import { getModels, loadModels, modelById, type ModelRefCaps } from "../api/referenceModels";
 import {
@@ -18,12 +18,20 @@ import { setGenConfig } from "../state/genConfig";
 // params / queue controls and the actual N-way run.
 export function InspectorPipeline() {
   const [models, setModels] = useState<ModelRefCaps[]>(getModels());
-  useEffect(() => {
-    loadModels().then((m) => setModels([...m]));
-  }, []);
-
   const [compareMode, setCompareMode] = useState(false);
   const [modelId, setModelId] = useState(getModels()[0].id);
+  const userPickedModel = useRef(false);
+  useEffect(() => {
+    loadModels().then((m) => {
+      setModels([...m]);
+      // Default to the first confirmed-slug model — an unverified default would 404 the
+      // user's first real-key generation. Don't override an explicit user choice.
+      if (!userPickedModel.current) {
+        const confirmed = m.find((x) => x.confirmed_slug === true);
+        if (confirmed) setModelId(confirmed.id);
+      }
+    });
+  }, []);
   const [comparisonSet, setComparisonSet] = useState<string[]>(() => {
     const m = getModels();
     return [m[0].id, m[Math.min(2, m.length - 1)].id];
@@ -138,7 +146,10 @@ export function InspectorPipeline() {
           <span style={{ fontSize: 11, color: COLOR_GENERATION, fontWeight: 600 }}>Model</span>
           <select
             value={modelId}
-            onChange={(e) => setModelId(e.target.value)}
+            onChange={(e) => {
+              userPickedModel.current = true;
+              setModelId(e.target.value);
+            }}
             style={{
               background: "#15181d",
               color: "#e2e8f0",
@@ -151,6 +162,7 @@ export function InspectorPipeline() {
             {models.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.label}
+                {m.confirmed_slug === false ? " (unverified)" : ""}
               </option>
             ))}
           </select>
@@ -162,6 +174,12 @@ export function InspectorPipeline() {
               ? `reference: ${model.reference_roles.join(" · ")}`
               : "no reference role"}
           </span>
+          {model.confirmed_slug === false && (
+            <span style={{ fontSize: 10.5, color: COLOR_GENERATION, lineHeight: 1.4 }}>
+              ⚠ This model's API endpoint hasn't been verified from its model card yet —
+              generation may fail.
+            </span>
+          )}
         </label>
       )}
 

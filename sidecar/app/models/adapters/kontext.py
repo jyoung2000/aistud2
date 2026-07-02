@@ -1,7 +1,14 @@
-"""FLUX Kontext adapter (instruction-based, no mask, no reference slot). TODO confirm slug."""
+"""FLUX Kontext adapter (instruction-based, no mask, no reference slot).
+
+Slug + field names verified from the WaveSpeed docs for `wavespeed-ai/flux-kontext-dev`
+(2026-07): prompt, image (singular), num_inference_steps, guidance_scale, num_images,
+seed, output_format, enable_base64_output, enable_safety_checker.
+"""
 from __future__ import annotations
 
 from app.imaging import png_to_base64
+
+SLUG = "flux-kontext-dev"
 
 NEEDS_MASK = False
 INSTRUCTION_BASED = True

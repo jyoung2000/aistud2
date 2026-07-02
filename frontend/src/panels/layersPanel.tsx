@@ -1,4 +1,7 @@
+import { useState } from "react";
 import type { AdjustSpec, AdjustType, BlendMode, Layer } from "../canvas/document";
+
+const COLLAPSE_KEY = "neuclip.layersPanel.collapsed";
 
 const ADJUSTS: AdjustType[] = ["exposure", "contrast", "saturation", "temperature", "vibrance"];
 
@@ -60,8 +63,65 @@ export function LayersPanel({
 }) {
   const selCount = selectedIds.length;
   const hasDecomposed = layers.some((l) => l.kind === "decomposed");
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(COLLAPSE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleCollapsed = () => {
+    setCollapsed((c) => {
+      try {
+        localStorage.setItem(COLLAPSE_KEY, c ? "0" : "1");
+      } catch {
+        /* private mode */
+      }
+      return !c;
+    });
+  };
   // Compositing order is bottom→top in the array; display top-first.
   const ordered = [...layers].reverse();
+
+  if (collapsed) {
+    // 28px rail — every horizontal pixel goes to the canvas on small screens
+    return (
+      <aside
+        style={{
+          width: 28,
+          flex: "0 0 28px",
+          height: "100%",
+          borderRight: "1px solid #20242b",
+          background: "#0f1216",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          paddingTop: 8,
+          gap: 10,
+        }}
+      >
+        <button
+          onClick={toggleCollapsed}
+          title="Expand layers panel"
+          style={{ border: "none", background: "transparent", color: "#94a3b8", cursor: "pointer", fontSize: 12 }}
+        >
+          ▶
+        </button>
+        <span
+          style={{
+            writingMode: "vertical-rl",
+            fontSize: 10,
+            letterSpacing: 2,
+            color: "#64748b",
+            fontWeight: 700,
+          }}
+        >
+          LAYERS {layers.length > 0 ? `(${layers.length})` : ""}
+        </span>
+      </aside>
+    );
+  }
+
   return (
     <aside
       style={{
@@ -75,8 +135,15 @@ export function LayersPanel({
         flexDirection: "column",
       }}
     >
-      <div style={{ padding: "10px 12px 6px", fontSize: 11, letterSpacing: 1, color: "#64748b", fontWeight: 700 }}>
+      <div style={{ padding: "10px 12px 6px", fontSize: 11, letterSpacing: 1, color: "#64748b", fontWeight: 700, display: "flex", alignItems: "center" }}>
         LAYERS
+        <button
+          onClick={toggleCollapsed}
+          title="Collapse layers panel"
+          style={{ marginLeft: "auto", border: "none", background: "transparent", color: "#94a3b8", cursor: "pointer", fontSize: 12, padding: 0 }}
+        >
+          ◀
+        </button>
       </div>
 
       {selCount > 0 && (

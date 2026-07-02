@@ -41,6 +41,7 @@ import { COLOR_GENERATION } from "../constants";
 import {
   composite as compositeDoc,
   newLayerId,
+  remapDuplicateLayerIds,
   serializeDoc,
   deserializeDoc,
   boundsFromMask,
@@ -59,6 +60,8 @@ import {
 } from "./document";
 import { b64ToFile, outpaint, finishImage, fillBehind } from "../api/generate";
 import { getGenConfig, useGenConfig } from "../state/genConfig";
+import { setViewState, useViewState } from "../state/viewState";
+import { Menu, MenuItem, MenuRow, MenuDivider } from "../ui/menu";
 import { LayersPanel } from "../panels/layersPanel";
 
 type Tool = "select" | "lasso" | "pen" | "wand" | "magic-brush" | "move" | "hand";
@@ -201,8 +204,8 @@ export function CanvasStage() {
   const [semanticText, setSemanticText] = useState("");
   const [namedSel, setNamedSel] = useState<{ name: string; data: Uint8Array }[]>([]);
   const [selNote, setSelNote] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<"normal" | "split" | "diff">("normal");
-  const [swipe, setSwipe] = useState(0.5); // 0..1 fraction
+  // view mode + swipe live in the shared view-state store (the StatusBar hosts the switch)
+  const { viewMode, swipe } = useViewState();
 
   const composite = useMemo(() => {
     if (!img) return null;
@@ -261,6 +264,10 @@ export function CanvasStage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, composite, img]);
 
+  useEffect(() => {
+    setViewState({ diffPct: diff?.pct ?? null });
+  }, [diff]);
+
   // checkerboard shown through transparent holes when decomposed (honest occlusion)
   const checkerTile = useMemo(() => {
     const c = document.createElement("canvas");
@@ -286,6 +293,18 @@ export function CanvasStage() {
 
   // gesture refs (avoid re-renders mid-drag)
   const drag = useRef<{ start: Pt; startT: ViewTransform; pan: boolean; moved: boolean; down: Pt } | null>(null);
+
+  // publish status values the StatusBar renders (view-mode switch, readouts, backend badge)
+  useEffect(() => {
+    setViewState({
+      hasImage: !!img,
+      cursor,
+      backend,
+      busy,
+      selPct: mask && !mask.isEmpty() ? (mask.area() / (mask.width * mask.height)) * 100 : 0,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [img, cursor, backend, busy, mask]);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -1843,6 +1862,8 @@ export function CanvasStage() {
   const openProject = async (file: File) => {
     const text = await file.text();
     const d = await deserializeDoc(text);
+    // ids are UUIDs now, but re-map any duplicates from old counter-based files
+    remapDuplicateLayerIds(d.layers, d.layerImgs, d.groups);
     setImg(d.baseImg);
     setLayers(d.layers);
     layerImgs.current = d.layerImgs;
@@ -2077,6 +2098,7 @@ export function CanvasStage() {
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
       <FileBar
         hasImage={!!img}
+        onOpen={openFile}
         onSave={saveProject}
         onOpenProject={openProject}
         onImport={importImageAsLayer}
@@ -2091,22 +2113,18 @@ export function CanvasStage() {
         onFinish={finishAndExport}
         decomposing={decomposing}
         onDecompose={runDecompose}
+        onExport={exportPng}
+        onExportCutout={exportCutout}
+        canExportCutout={!!mask && !mask.isEmpty()}
       />
       <ZoomBar
         zoom={t.scale}
-        cursor={cursor}
         hasImage={!!img}
         tool={tool}
         onTool={setTool}
         lassoMode={lassoMode}
         onLassoMode={setLassoMode}
-        selPct={mask && !mask.isEmpty() ? (mask.area() / (mask.width * mask.height)) * 100 : 0}
         onInvert={invertMask}
-        antialias={antialias}
-        onAntialias={setAntialias}
-        feather={feather}
-        onFeather={setFeather}
-        backend={backend}
         busy={busy}
         canRefine={!!mask && !mask.isEmpty()}
         onRefine={runRefine}
@@ -2121,13 +2139,6 @@ export function CanvasStage() {
         canRedo={redoStack.current.length > 0}
         onUndo={undo}
         onRedo={redo}
-        onExport={exportPng}
-        onExportCutout={exportCutout}
-        viewMode={viewMode}
-        onViewMode={setViewMode}
-        swipe={swipe}
-        onSwipe={setSwipe}
-        diffPct={diff?.pct ?? null}
         onOpen={openFile}
         onIn={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1.25))}
         onOut={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1 / 1.25))}
@@ -2154,6 +2165,10 @@ export function CanvasStage() {
           tool={tool}
           onWandTool={() => setTool("wand")}
           busy={busy}
+          antialias={antialias}
+          onAntialias={setAntialias}
+          feather={feather}
+          onFeather={setFeather}
           onSubject={selectSubject}
           wandTol={wandTol}
           onWandTol={setWandTol}
@@ -2627,6 +2642,7 @@ function GenerateBar({
 
 function FileBar({
   hasImage,
+  onOpen,
   onSave,
   onOpenProject,
   onImport,
@@ -2641,8 +2657,12 @@ function FileBar({
   onFinish,
   decomposing,
   onDecompose,
+  onExport,
+  onExportCutout,
+  canExportCutout,
 }: {
   hasImage: boolean;
+  onOpen: (f: File) => void;
   onSave: () => void;
   onOpenProject: (f: File) => void;
   onImport: (f: File) => void;
@@ -2657,9 +2677,13 @@ function FileBar({
   onFinish: (scale: number, faceRestore: boolean) => void;
   decomposing: boolean;
   onDecompose: (g: "simple" | "fine") => void;
+  onExport: () => void;
+  onExportCutout: () => void;
+  canExportCutout: boolean;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
+  const openRef = useRef<HTMLInputElement>(null);
   const [finishFace, setFinishFace] = useState(false);
   const btn: React.CSSProperties = {
     background: "#181c22",
@@ -2682,17 +2706,29 @@ function FileBar({
     <div
       data-tour="filebar"
       style={{
-        height: 32,
+        minHeight: 32,
         display: "flex",
+        flexWrap: "wrap",
         alignItems: "center",
         gap: 8,
-        padding: "0 10px",
+        padding: "3px 10px",
         borderBottom: "1px solid #20242b",
         background: "#0d1014",
         font: "11.5px ui-monospace, monospace",
         color: "#94a3b8",
       }}
     >
+      {/* hidden pickers shared by the menus */}
+      <input
+        ref={openRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(e) => {
+          if (e.target.files?.[0]) onOpen(e.target.files[0]);
+          e.currentTarget.value = "";
+        }}
+      />
       <input
         ref={fileRef}
         type="file"
@@ -2700,13 +2736,6 @@ function FileBar({
         hidden
         onChange={(e) => e.target.files?.[0] && onOpenProject(e.target.files[0])}
       />
-      <button style={btn} onClick={() => fileRef.current?.click()}>
-        Open .neuclip
-      </button>
-      <button style={btn} disabled={!hasImage} onClick={onSave} title="Save project (Cmd/Ctrl+S)">
-        Save .neuclip
-      </button>
-      <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
       <input
         ref={importRef}
         type="file"
@@ -2717,14 +2746,108 @@ function FileBar({
           e.currentTarget.value = "";
         }}
       />
-      <button
-        style={btn}
-        disabled={!hasImage}
-        onClick={() => importRef.current?.click()}
-        title="Import another image as a movable layer (collage). Flatten for AI to let the AI edit it."
-      >
-        + Import image
-      </button>
+
+      <Menu label="File">
+        <MenuItem label="Open image…" onClick={() => openRef.current?.click()} />
+        <MenuItem label="Open project (.neuclip)…" onClick={() => fileRef.current?.click()} />
+        <MenuItem label="Save project (.neuclip)" hint="⌘S" disabled={!hasImage} onClick={onSave} />
+        <MenuItem
+          label="Import image as layer…"
+          disabled={!hasImage}
+          onClick={() => importRef.current?.click()}
+        />
+        <MenuDivider />
+        <MenuItem label="Export PNG" disabled={!hasImage} onClick={onExport} />
+        <MenuItem
+          label="Export cutout (selection only)"
+          disabled={!canExportCutout}
+          onClick={onExportCutout}
+        />
+        <MenuDivider />
+        <MenuRow label="Finish">
+          <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={finishFace}
+              onChange={(e) => setFinishFace(e.target.checked)}
+              style={{ accentColor: "#22d3ee" }}
+            />
+            restore faces
+          </label>
+        </MenuRow>
+        <MenuItem label="Upscale 2× and export" disabled={!hasImage} onClick={() => onFinish(2, finishFace)} />
+        <MenuItem label="Upscale 4× and export" disabled={!hasImage} onClick={() => onFinish(4, finishFace)} />
+      </Menu>
+
+      <Menu label="Image" width={250}>
+        <MenuRow label="Crop">
+          <select
+            disabled={!hasImage}
+            defaultValue="Free"
+            onChange={(e) => {
+              const a = ASPECTS.find((x) => x[0] === e.target.value);
+              onAspect((a?.[1] as number | null) ?? null);
+            }}
+            style={{ ...btn, padding: "2px 4px", flex: 1 }}
+          >
+            {ASPECTS.map(([label]) => (
+              <option key={label} value={label}>
+                {label}
+              </option>
+            ))}
+          </select>
+          {hasCrop && <span style={{ color: "#22d3ee", fontSize: 10 }}>cropped</span>}
+        </MenuRow>
+        <MenuRow label="Extend">
+          <select
+            disabled={!hasImage}
+            defaultValue=""
+            onChange={(e) => {
+              const r = Number(e.target.value);
+              if (r) onExtend(r);
+              e.target.value = "";
+            }}
+            style={{ ...btn, padding: "2px 4px", flex: 1 }}
+            title="Outpaint: extend the canvas to a new aspect and fill the new region"
+          >
+            <option value="">to…</option>
+            <option value={1}>1:1</option>
+            <option value={16 / 9}>16:9</option>
+            <option value={9 / 16}>9:16</option>
+            <option value={4 / 3}>4:3</option>
+            <option value={3 / 2}>3:2</option>
+          </select>
+        </MenuRow>
+        <MenuRow label="Straighten">
+          <input
+            type="range"
+            min={-15}
+            max={15}
+            step={0.5}
+            value={straighten}
+            disabled={!hasImage}
+            onChange={(e) => onStraighten(Number(e.target.value))}
+            style={{ flex: 1, accentColor: "#22d3ee" }}
+          />
+          <span style={{ width: 36, textAlign: "right" }}>{straighten.toFixed(1)}°</span>
+        </MenuRow>
+        <MenuDivider />
+        <MenuItem
+          label={decomposing ? "Separating…" : "Auto-separate into layers"}
+          accent="#f2a33c"
+          disabled={!hasImage || decomposing}
+          onClick={() => onDecompose("simple")}
+        />
+        <MenuItem
+          label="Flatten for AI (bake all layers)"
+          accent="#f2a33c"
+          disabled={!canFlatten}
+          onClick={onFlatten}
+        />
+        <MenuItem label="Add adjustment layer" disabled={!hasImage} onClick={onAddAdjustment} />
+      </Menu>
+
+      <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
       <button
         style={{ ...btn, borderColor: "#f2a33c55", color: "#f2a33c" }}
         disabled={!canFlatten}
@@ -2732,10 +2855,6 @@ function FileBar({
         title="Bake all layers (incl. imported images) into the base so AI edits apply to them"
       >
         ⤵ Flatten for AI
-      </button>
-      <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
-      <button style={btn} disabled={!hasImage} onClick={onAddAdjustment} title="Add adjustment layer">
-        + Adjustment
       </button>
       <button
         style={{ ...btn, borderColor: "#f2a33c55", color: "#f2a33c" }}
@@ -2745,68 +2864,6 @@ function FileBar({
       >
         {decomposing ? "separating…" : "⛶ Auto-separate"}
       </button>
-      <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
-      <span>Crop</span>
-      <select
-        disabled={!hasImage}
-        defaultValue="Free"
-        onChange={(e) => {
-          const a = [["Free", null], ["1:1", 1], ["16:9", 16 / 9], ["9:16", 9 / 16], ["4:3", 4 / 3], ["3:2", 3 / 2]].find((x) => x[0] === e.target.value);
-          onAspect((a?.[1] as number | null) ?? null);
-        }}
-        style={{ ...btn, padding: "2px 4px" }}
-      >
-        {ASPECTS.map(([label]) => (
-          <option key={label} value={label}>
-            {label}
-          </option>
-        ))}
-      </select>
-      {hasCrop && <span style={{ color: "#22d3ee", fontSize: 10 }}>cropped</span>}
-      <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
-      <span>Extend</span>
-      <select
-        disabled={!hasImage}
-        defaultValue=""
-        onChange={(e) => {
-          const r = Number(e.target.value);
-          if (r) onExtend(r);
-          e.target.value = "";
-        }}
-        style={{ ...btn, padding: "2px 4px" }}
-        title="Outpaint: extend the canvas to a new aspect and fill the new region"
-      >
-        <option value="">to…</option>
-        <option value={1}>1:1</option>
-        <option value={16 / 9}>16:9</option>
-        <option value={9 / 16}>9:16</option>
-        <option value={4 / 3}>4:3</option>
-        <option value={3 / 2}>3:2</option>
-      </select>
-      <span style={{ marginLeft: 8 }}>Straighten</span>
-      <input
-        type="range"
-        min={-15}
-        max={15}
-        step={0.5}
-        value={straighten}
-        disabled={!hasImage}
-        onChange={(e) => onStraighten(Number(e.target.value))}
-        style={{ width: 90, accentColor: "#22d3ee" }}
-      />
-      <span style={{ width: 36 }}>{straighten.toFixed(1)}°</span>
-      <span style={{ width: 1, height: 16, background: "#2a2f37" }} />
-      <span>Finish</span>
-      <label style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer" }}>
-        <input type="checkbox" checked={finishFace} onChange={(e) => setFinishFace(e.target.checked)} style={{ accentColor: "#22d3ee" }} />
-        face
-      </label>
-      <button style={btn} disabled={!hasImage} onClick={() => onFinish(2, finishFace)} title="Upscale 2x (+ optional face restore) and export">
-        ↑2× export
-      </button>
-      <button style={btn} disabled={!hasImage} onClick={() => onFinish(4, finishFace)} title="Upscale 4x and export">
-        ↑4×
-      </button>
     </div>
   );
 }
@@ -2815,6 +2872,10 @@ function SelectBar({
   tool,
   onWandTool,
   busy,
+  antialias,
+  onAntialias,
+  feather,
+  onFeather,
   onSubject,
   wandTol,
   onWandTol,
@@ -2834,6 +2895,10 @@ function SelectBar({
   tool: Tool;
   onWandTool: () => void;
   busy: boolean;
+  antialias: boolean;
+  onAntialias: (v: boolean) => void;
+  feather: number;
+  onFeather: (v: number) => void;
   onSubject: () => void;
   wandTol: number;
   onWandTol: (v: number) => void;
@@ -2895,6 +2960,22 @@ function SelectBar({
       <button style={btn} onClick={onGrow} title="Grow selection 3px">Grow</button>
       <button style={btn} onClick={onShrink} title="Shrink selection 3px">Shrink</button>
       <button style={btn} onClick={onSmooth} title="Smooth selection edges">Smooth</button>
+      {/* shared selection-edge options — apply to every select tool's next commit */}
+      <label style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, cursor: "pointer" }} title="Anti-alias the selection edge (sub-pixel coverage)">
+        <input type="checkbox" checked={antialias} onChange={(e) => onAntialias(e.target.checked)} style={{ accentColor: C }} />
+        AA
+      </label>
+      <label style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10.5 }} title="Feather radius (px) — Gaussian softness of the selection edge">
+        feather
+        <input
+          type="number"
+          min={0}
+          max={1000}
+          value={feather}
+          onChange={(e) => onFeather(Math.max(0, Math.min(1000, Number(e.target.value) || 0)))}
+          style={{ width: 42, background: "#0d0f12", color: "#e2e8f0", border: "1px solid #233037", borderRadius: 5, padding: "2px 4px", fontSize: 11 }}
+        />
+      </label>
       <span style={{ width: 1, height: 16, background: "#233037" }} />
       <input
         value={semanticText}
@@ -2950,7 +3031,7 @@ function BrushBar({
 }) {
   const C = "#22d3ee";
   const bar: React.CSSProperties = {
-    height: 34, display: "flex", alignItems: "center", gap: 8, padding: "0 10px",
+    minHeight: 34, display: "flex", alignItems: "center", gap: 8, padding: "3px 10px",
     borderBottom: "1px solid #20242b", background: "#0c1216", font: "11.5px ui-monospace, monospace", color: "#9fb4c4", flexWrap: "wrap",
   };
   const btn: React.CSSProperties = { background: "#12181d", color: "#cbd5e1", border: "1px solid #233037", borderRadius: 5, padding: "3px 8px", fontSize: 11, cursor: "pointer" };
@@ -2984,32 +3065,28 @@ function BrushBar({
   );
 }
 
+const TOOL_DEFS: { id: Tool; icon: string; label: string; key: string }[] = [
+  { id: "move", icon: "✥", label: "Move / select layers", key: "V" },
+  { id: "select", icon: "⬚", label: "Smart select — click subject, drag box", key: "M" },
+  { id: "lasso", icon: "◠", label: "Lasso — Enter/double-click closes, Esc cancels", key: "Shift+L cycles mode" },
+  { id: "pen", icon: "✎", label: "Pen — click=corner, drag=curve, Alt-click toggles smooth", key: "Enter commits" },
+  { id: "wand", icon: "✦", label: "Magic wand — flood-select by color", key: "Shift+W" },
+  { id: "magic-brush", icon: "🖌", label: "Magic Brush — paint roughly, AI snaps to the subject", key: "W" },
+  { id: "hand", icon: "✋", label: "Hand — pan the view", key: "H, or hold Space" },
+];
+
 function ZoomBar({
   zoom,
-  cursor,
   hasImage,
   tool,
   onTool,
   lassoMode,
   onLassoMode,
-  selPct,
   onInvert,
-  antialias,
-  onAntialias,
-  feather,
-  onFeather,
   canUndo,
   canRedo,
   onUndo,
   onRedo,
-  onExport,
-  onExportCutout,
-  viewMode,
-  onViewMode,
-  swipe,
-  onSwipe,
-  diffPct,
-  backend,
   busy,
   canRefine,
   onRefine,
@@ -3021,30 +3098,16 @@ function ZoomBar({
   onActual,
 }: {
   zoom: number;
-  cursor: Pt | null;
   hasImage: boolean;
   tool: Tool;
   onTool: (t: Tool) => void;
   lassoMode: LassoMode;
   onLassoMode: (m: LassoMode) => void;
-  selPct: number;
   onInvert: () => void;
-  antialias: boolean;
-  onAntialias: (v: boolean) => void;
-  feather: number;
-  onFeather: (v: number) => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
-  onExport: () => void;
-  onExportCutout: () => void;
-  viewMode: "normal" | "split" | "diff";
-  onViewMode: (m: "normal" | "split" | "diff") => void;
-  swipe: number;
-  onSwipe: (v: number) => void;
-  diffPct: number | null;
-  backend: string | null;
   busy: boolean;
   canRefine: boolean;
   onRefine: () => void;
@@ -3061,12 +3124,16 @@ function ZoomBar({
     color: "#cbd5e1",
     border: "1px solid #2a2f37",
     borderRadius: 5,
-    padding: "4px 9px",
+    padding: "4px 8px",
     fontSize: 12,
     cursor: "pointer",
   };
+  // icon-only tool buttons (labels live in the tooltips) — the full set fits 1280×720
   const toolBtn = (active: boolean): React.CSSProperties => ({
     ...btn,
+    width: 30,
+    padding: "4px 0",
+    textAlign: "center",
     background: active ? "#22d3ee22" : btn.background,
     borderColor: active ? "#22d3ee" : "#2a2f37",
     color: active ? "#22d3ee" : "#cbd5e1",
@@ -3074,11 +3141,12 @@ function ZoomBar({
   return (
     <div
       style={{
-        height: 36,
+        minHeight: 36,
         display: "flex",
+        flexWrap: "wrap",
         alignItems: "center",
-        gap: 8,
-        padding: "0 10px",
+        gap: 6,
+        padding: "3px 10px",
         borderBottom: "1px solid #20242b",
         background: "#101317",
         font: "12px ui-monospace, monospace",
@@ -3096,50 +3164,31 @@ function ZoomBar({
         Open image
       </button>
       <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
-      <span data-tour="tools" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-      <button style={toolBtn(tool === "move")} onClick={() => onTool("move")} title="Move / select layers (V)">
-        ✥ Move
-      </button>
-      <button style={toolBtn(tool === "select")} onClick={() => onTool("select")} title="Smart select (M)">
-        ⬚ Select
-      </button>
-      <button
-        style={toolBtn(tool === "lasso")}
-        onClick={() => onTool("lasso")}
-        title="Lasso — Shift+L cycles mode; Enter/double-click closes; Esc cancels"
-      >
-        ◠ Lasso
-      </button>
-      {tool === "lasso" && (
-        <select
-          value={lassoMode}
-          onChange={(e) => onLassoMode(e.target.value as LassoMode)}
-          style={{ ...btn, padding: "3px 6px" }}
-          title="Lasso mode (Shift+L)"
-        >
-          <option value="free">Freehand</option>
-          <option value="poly">Polygonal</option>
-          <option value="magnetic">Magnetic</option>
-        </select>
-      )}
-      <button
-        style={toolBtn(tool === "pen")}
-        onClick={() => onTool("pen")}
-        title="Manual pen — click=corner, drag=curve, Alt-click=toggle smooth, Enter commits"
-      >
-        ✎ Pen
-      </button>
-      <button
-        style={toolBtn(tool === "magic-brush")}
-        onClick={() => onTool("magic-brush")}
-        title="Magic Brush — paint to select; snaps to the subject (W; Shift+W ↔ wand)"
-      >
-        🖌 Brush
-      </button>
-      <button style={toolBtn(tool === "hand")} onClick={() => onTool("hand")} title="Hand — pan (H, or hold Space)">
-        ✋ Hand
-      </button>
+      <span data-tour="tools" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+        {TOOL_DEFS.map((d) => (
+          <button
+            key={d.id}
+            style={toolBtn(tool === d.id)}
+            onClick={() => onTool(d.id)}
+            title={`${d.label} (${d.key})`}
+          >
+            {d.icon}
+          </button>
+        ))}
+        {tool === "lasso" && (
+          <select
+            value={lassoMode}
+            onChange={(e) => onLassoMode(e.target.value as LassoMode)}
+            style={{ ...btn, padding: "3px 4px" }}
+            title="Lasso mode (Shift+L)"
+          >
+            <option value="free">Freehand</option>
+            <option value="poly">Polygonal</option>
+            <option value="magnetic">Magnetic</option>
+          </select>
+        )}
       </span>
+      <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
       <button
         style={btn}
         disabled={!canRefine || busy}
@@ -3148,90 +3197,33 @@ function ZoomBar({
       >
         ✦ Refine
       </button>
-      <button style={btn} disabled={!canRefine} onClick={onInvert} title="Invert selection (Cmd/Ctrl+Shift+I)">
-        Invert
+      <button style={{ ...btn, width: 30, padding: "4px 0" }} disabled={!canRefine} onClick={onInvert} title="Invert selection (Cmd/Ctrl+Shift+I)">
+        ◐
       </button>
-      <button style={btn} disabled={!canRefine} onClick={onClearSel} title="Clear selection">
-        Clear
+      <button style={{ ...btn, width: 30, padding: "4px 0" }} disabled={!canRefine} onClick={onClearSel} title="Clear selection (Cmd/Ctrl+D)">
+        ✕
       </button>
-      {/* shared selection-edge options — apply to every select tool's next commit */}
-      <label style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, color: "#8aa0b8", cursor: "pointer" }} title="Anti-alias the selection edge (sub-pixel coverage)">
-        <input type="checkbox" checked={antialias} onChange={(e) => onAntialias(e.target.checked)} style={{ accentColor: "#22d3ee" }} />
-        AA
-      </label>
-      <label style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, color: "#8aa0b8" }} title="Feather radius (px) — Gaussian softness of the selection edge">
-        feather
-        <input
-          type="number"
-          min={0}
-          max={1000}
-          value={feather}
-          onChange={(e) => onFeather(Math.max(0, Math.min(1000, Number(e.target.value) || 0)))}
-          style={{ width: 42, background: "#0d0f12", color: "#e2e8f0", border: "1px solid #233037", borderRadius: 5, padding: "2px 4px", fontSize: 11 }}
-        />
-      </label>
-      {selPct > 0 && (
-        <span style={{ fontSize: 10.5, color: "#22d3ee" }}>sel {selPct.toFixed(1)}%</span>
-      )}
       <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
-      <button style={btn} disabled={!canUndo} onClick={onUndo} title="Undo (Cmd/Ctrl+Z)">
+      <button style={{ ...btn, width: 30, padding: "4px 0" }} disabled={!canUndo} onClick={onUndo} title="Undo (Cmd/Ctrl+Z)">
         ↶
       </button>
-      <button style={btn} disabled={!canRedo} onClick={onRedo} title="Redo (Cmd/Ctrl+Shift+Z)">
+      <button style={{ ...btn, width: 30, padding: "4px 0" }} disabled={!canRedo} onClick={onRedo} title="Redo (Cmd/Ctrl+Shift+Z)">
         ↷
       </button>
-      <button style={btn} disabled={!hasImage} onClick={onExport} title="Export PNG">
-        Export
-      </button>
-      <button style={btn} disabled={!canRefine} onClick={onExportCutout} title="Export selection as transparent PNG">
-        Cutout
-      </button>
-      {hasImage && backend && (
-        <span
-          style={{
-            fontSize: 10.5,
-            padding: "2px 7px",
-            borderRadius: 4,
-            border: `1px solid ${backend === "sam2" ? "#22c55e" : "#64748b"}`,
-            color: backend === "sam2" ? "#22c55e" : "#94a3b8",
-          }}
-          title={backend === "sam2" ? "SAM 2 on GPU" : "Classical CPU fallback (no SAM weights)"}
-        >
-          {busy ? "…" : backend === "sam2" ? "SAM 2" : "CPU select"}
-        </span>
-      )}
       <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
-      <button style={btn} disabled={!hasImage} onClick={onOut}>
+      <button style={{ ...btn, width: 26, padding: "4px 0" }} disabled={!hasImage} onClick={onOut} title="Zoom out (Cmd/Ctrl −)">
         −
       </button>
-      <span style={{ width: 52, textAlign: "center", color: "#e2e8f0" }}>{(zoom * 100).toFixed(0)}%</span>
-      <button style={btn} disabled={!hasImage} onClick={onIn}>
+      <span style={{ width: 46, textAlign: "center", color: "#e2e8f0" }}>{(zoom * 100).toFixed(0)}%</span>
+      <button style={{ ...btn, width: 26, padding: "4px 0" }} disabled={!hasImage} onClick={onIn} title="Zoom in (Cmd/Ctrl +)">
         +
       </button>
-      <button style={btn} disabled={!hasImage} onClick={onFit}>
+      <button style={btn} disabled={!hasImage} onClick={onFit} title="Fit image to window (Cmd/Ctrl+0)">
         Fit
       </button>
-      <button style={btn} disabled={!hasImage} onClick={onActual}>
+      <button style={btn} disabled={!hasImage} onClick={onActual} title="Actual pixels (Cmd/Ctrl+1)">
         100%
       </button>
-      <span style={{ width: 1, height: 18, background: "#2a2f37", marginLeft: "auto" }} />
-      {(["normal", "split", "diff"] as const).map((m) => (
-        <button
-          key={m}
-          style={{ ...toolBtn(viewMode === m), padding: "4px 7px" }}
-          onClick={() => onViewMode(m)}
-          title={m === "normal" ? "Edit view" : m === "split" ? "Before/after swipe" : "Changed-pixels diff"}
-        >
-          {m === "normal" ? "Edit" : m === "split" ? "A|B" : "Diff"}
-        </button>
-      ))}
-      {viewMode === "split" && (
-        <input type="range" min={0} max={1} step={0.01} value={swipe} onChange={(e) => onSwipe(Number(e.target.value))} style={{ width: 80, accentColor: "#22d3ee" }} />
-      )}
-      {viewMode === "diff" && diffPct != null && (
-        <span style={{ color: "#e879f9", fontSize: 10.5 }}>changed {diffPct.toFixed(1)}%</span>
-      )}
-      <span>{cursor ? `x ${cursor.x.toFixed(0)} y ${cursor.y.toFixed(0)}` : "—"}</span>
     </div>
   );
 }
