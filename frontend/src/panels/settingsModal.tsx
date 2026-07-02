@@ -114,8 +114,10 @@ export function SettingsModal({
           API KEYS
         </div>
         <p style={{ fontSize: 11, color: "#7d8694", margin: "6px 0 12px", lineHeight: 1.4 }}>
-          Stored locally on this machine, owner-readable only. Leave blank to keep the current
-          value. An environment variable is used as a fallback.
+          Stored locally in your user config folder (~/.neuclip). On macOS/Linux the file is
+          restricted to your user account (chmod 600); on Windows it relies on your user
+          profile's folder permissions. Leave blank to keep the current value. An environment
+          variable is used as a fallback.
         </p>
 
         <KeyField

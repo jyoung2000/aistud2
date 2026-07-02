@@ -65,6 +65,7 @@ import { saveFile } from "../api/saveFile";
 import { runShootout, recordExemplar } from "../api/shootout";
 import { modelById } from "../api/referenceModels";
 import { getGenConfig, useGenConfig } from "../state/genConfig";
+import { toastError, toastSuccess, toast } from "../ui/toast";
 import { setViewState, useViewState } from "../state/viewState";
 import { Menu, MenuItem, MenuRow, MenuDivider } from "../ui/menu";
 import { LayersPanel } from "../panels/layersPanel";
@@ -196,14 +197,17 @@ export function CanvasStage() {
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>([]);
   const [marquee, setMarquee] = useState<LayerBounds | null>(null);
   const moveDrag = useRef<{
-    mode: "translate" | "scale" | "marquee";
+    mode: "translate" | "scale" | "marquee" | "rotate";
     start: Pt;
     startT: Map<string, LayerTransform>;
     center?: Pt;
     startDist?: number;
+    startAngle?: number;
     shift?: boolean;
+    pushed?: boolean; // history snapshot taken on FIRST movement, not on mousedown
   } | null>(null);
   const [docTransform, setDocTransform] = useState<DocTransform>({ straighten: 0 });
+  const [cropEditing, setCropEditing] = useState(false); // crop rect handles visible
   const imgPx = useRef<ImgPx | null>(null); // cached base pixels for magic wand
   const [wandTol, setWandTol] = useState(0.15);
   const [wandContig, setWandContig] = useState(true);
@@ -223,6 +227,7 @@ export function CanvasStage() {
   const brushOp = useRef<BoolOp>("replace");
   const brushErasing = useRef(false);
   const brushBusy = useRef(false);
+  const brushQueued = useRef(false);
   const brushLast = useRef<Pt | null>(null);
   const gradCache = useRef<{ id: string; g: Uint8Array } | null>(null);
   const [semanticText, setSemanticText] = useState("");
@@ -401,11 +406,14 @@ export function CanvasStage() {
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === "Space") setSpaceHeld(false);
     };
+    const onBlur = () => setSpaceHeld(false); // window blur can eat the keyup
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
     };
   }, [vp.w, vp.h, img]);
 
@@ -418,6 +426,11 @@ export function CanvasStage() {
     const onKey = (e: KeyboardEvent) => {
       if (typing()) return;
       const mod = e.metaKey || e.ctrlKey;
+      if (cropEditing && e.key === "Enter") {
+        e.preventDefault();
+        setCropEditing(false); // crop stays non-destructive; Enter just commits the rect
+        return;
+      }
       if (mod && e.shiftKey && (e.key === "i" || e.key === "I")) {
         e.preventDefault();
         invertMask(); // Cmd/Ctrl+Shift+I — invert (subject -> background)
@@ -473,6 +486,10 @@ export function CanvasStage() {
         setTool("lasso");
         setLassoMode((m) => (m === "free" ? "poly" : m === "poly" ? "magnetic" : "free"));
         cancelLasso();
+        return;
+      }
+      if (!mod && !e.shiftKey && (e.key === "l" || e.key === "L")) {
+        setTool("lasso"); // L — lasso (Shift+L cycles its mode)
         return;
       }
       if (!e.metaKey && !e.ctrlKey && (e.key === "v" || e.key === "V")) {
@@ -540,7 +557,7 @@ export function CanvasStage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, lassoPts, lassoMode, pen, penSel, mask, selectedLayerIds, brushPreview, brushRefine]);
+  }, [tool, lassoPts, lassoMode, pen, penSel, mask, selectedLayerIds, brushPreview, brushRefine, cropEditing]);
 
   // undo/redo keyboard (fresh closures via deps; zoom/pan are NOT on the stack)
   useEffect(() => {
@@ -630,7 +647,10 @@ export function CanvasStage() {
         // auto-separate subjects/background into editable layers (an editable proposal)
         void runDecompose("simple", r.id);
       })
-      .catch((e) => console.error("load to sidecar failed:", e));
+      .catch((e) => {
+        console.error("load to sidecar failed:", e);
+        toastError("Couldn't send the image to the engine — selection tools are offline. Is the sidecar running?");
+      });
   };
 
   // Import an extra image as a movable/scalable layer (collage). It is NOT baked into the
@@ -737,8 +757,10 @@ export function CanvasStage() {
       setBackend(up.backend);
       setImgVer((v) => v + 1);
       setGenStatus("idle");
+      toastSuccess("Flattened for AI — edits now apply to the merged image.");
     } catch (e) {
       console.error("flatten failed:", e);
+      toastError("Flatten for AI failed — nothing was changed (document and engine still agree).");
       setGenStatus("failed"); // state untouched — document and sidecar still agree
     }
   };
@@ -793,6 +815,7 @@ export function CanvasStage() {
       setGenStatus("idle");
     } catch (e) {
       console.error("flatten layer failed:", e);
+      toastError("Flatten failed — nothing was changed.");
       setGenStatus("failed"); // state untouched — document and sidecar still agree
     }
   };
@@ -812,6 +835,7 @@ export function CanvasStage() {
       setBackend(r.backend);
     } catch (e) {
       console.error("select failed:", e);
+      toastError("Selection failed — try again or use a different tool.");
     } finally {
       setBusy(false);
     }
@@ -826,6 +850,7 @@ export function CanvasStage() {
       setMask(new MaskBuffer(mask.width, mask.height, data));
     } catch (e) {
       console.error("refine failed:", e);
+      toastError("Edge refine failed — the selection is unchanged.");
     } finally {
       setBusy(false);
     }
@@ -879,6 +904,7 @@ export function CanvasStage() {
   };
 
   const onMouseMove = (e: any) => {
+    shiftRef.current = !!e.evt.shiftKey;
     const p = ptr(e);
     const d = drag.current;
     if (d && p) {
@@ -950,7 +976,9 @@ export function CanvasStage() {
       if (lassoMode === "free" && freehand.current) {
         freehand.current = false;
         commitLasso([...lassoPts, ip]);
-      } else if (!d.moved) {
+      } else if (!d.moved && e.evt.detail < 2) {
+        // detail>=2 is the second click of a double-click — the dblclick handler commits;
+        // adding an anchor here would leave a duplicate point on the path
         void lassoClick(ip, e);
       }
       return;
@@ -1022,7 +1050,10 @@ export function CanvasStage() {
       return;
     }
     if (brushSnap === "ai" && imageId) {
-      if (brushBusy.current) return; // throttle to one query in flight
+      if (brushBusy.current) {
+        brushQueued.current = true; // trailing re-run — never silently drop a stroke
+        return;
+      }
       brushBusy.current = true;
       try {
         const pts = [
@@ -1038,6 +1069,10 @@ export function CanvasStage() {
         setSelNote("AI snap unavailable — using local");
       } finally {
         brushBusy.current = false;
+        if (brushQueued.current) {
+          brushQueued.current = false;
+          void runBrushSnap(); // a stroke landed while busy — snap it now
+        }
       }
     }
     // local (or AI fallback)
@@ -1101,6 +1136,7 @@ export function CanvasStage() {
       wire.current = new LiveWire(cm.cost, cm.w, cm.h, cm.scale);
     } catch (e) {
       console.error("costmap failed:", e);
+      toastError("Magnetic lasso edge map failed — falling back to straight segments.");
     }
   };
 
@@ -1168,6 +1204,7 @@ export function CanvasStage() {
       return;
     }
     if (pen.anchors.length === 0) penOp.current = opFromModifiers(e.evt.shiftKey, e.evt.altKey);
+    if (e.evt.detail >= 2) return; // second click of a double-click commits — no new anchor
     if (pen.closed) return; // closed path: no extending
     const a: Anchor = { p: ip, hIn: null, hOut: null, smooth: false };
     const arr = [...pen.anchors, a];
@@ -1340,6 +1377,7 @@ export function CanvasStage() {
       setMask(new MaskBuffer(r.width, r.height, r.data));
     } catch (e) {
       console.error("select subject failed:", e);
+      toastError("Couldn't find a subject — try clicking it with Select (M).");
     } finally {
       setBusy(false);
     }
@@ -1356,6 +1394,7 @@ export function CanvasStage() {
       if (r.note) setSelNote(r.note);
     } catch (e) {
       console.error("semantic select failed:", e);
+      toastError("Select-by-text failed — try a simpler phrase.");
     } finally {
       setBusy(false);
     }
@@ -1385,7 +1424,10 @@ export function CanvasStage() {
   const undoStack = useRef<Snap[]>([]);
   const redoStack = useRef<Snap[]>([]);
   const [, setHistTick] = useState(0);
-  const cloneLayer = (L: DocLayer): DocLayer => ({ ...L, mask: L.mask ? new Uint8Array(L.mask) : undefined });
+  // Structural sharing: layer masks are never mutated in place (every edit allocates a new
+  // Uint8Array), so history snapshots share the same buffer instead of copying ~W×H bytes
+  // per layer per undo step.
+  const cloneLayer = (L: DocLayer): DocLayer => ({ ...L });
   const snapshot = (): Snap => ({
     mask: mask ? mask.clone() : null,
     imageId,
@@ -1444,6 +1486,7 @@ export function CanvasStage() {
       setGenStatus("done");
     } catch (e) {
       console.error("finish failed:", e);
+      toastError("Upscale/export failed — try again.");
       setGenStatus("failed");
     }
   };
@@ -1453,6 +1496,19 @@ export function CanvasStage() {
     const c = exportCanvas();
     if (!c) return;
     c.toBlob((b) => b && void saveFile(b, "neuclip-export.png"), "image/png");
+  };
+  const exportAs = (fmt: "png" | "jpeg" | "webp", quality: number) => {
+    const c = exportCanvas();
+    if (!c) return;
+    const ext = fmt === "jpeg" ? "jpg" : fmt;
+    c.toBlob(
+      (b) => {
+        if (b) void saveFile(b, `neuclip-export.${ext}`);
+        else toastError(`This browser can't encode ${fmt.toUpperCase()} — try PNG.`);
+      },
+      `image/${fmt}`,
+      fmt === "png" ? undefined : quality
+    );
   };
   const exportCutout = () => {
     if (!img || !mask || mask.isEmpty() || !composite) return;
@@ -1498,8 +1554,12 @@ export function CanvasStage() {
       setDecomposed(true);
       setActiveLayer(newLayers[newLayers.length - 1]?.id ?? null);
       setImgVer((v) => v + 1);
+      if (granularity === "fine" && r.backend === "fallback") {
+        toast("Fine separation needs the GPU grounded model — using the simple subject/background split.", "info");
+      }
     } catch (e) {
       console.error("decompose failed:", e);
+      toastError("Auto-separate failed — the image is untouched.");
     } finally {
       setDecomposing(false);
     }
@@ -1565,6 +1625,7 @@ export function CanvasStage() {
       } else setGenStatus("failed");
     } catch (e) {
       console.error("reroll failed:", e);
+      toastError("Re-roll failed — the layer kept its previous result.");
       setGenStatus("failed");
     }
   };
@@ -1587,6 +1648,7 @@ export function CanvasStage() {
       setGenStatus(out.length ? "done" : "failed");
     } catch (e) {
       console.error("variations failed:", e);
+      toastError("Variations failed — nothing was changed.");
       setGenStatus("failed");
     }
   };
@@ -1648,6 +1710,7 @@ export function CanvasStage() {
       }
     } catch (e) {
       console.error("fill behind failed:", e);
+      toastError("Fill-behind failed — the background layer is unchanged.");
     } finally {
       setDecomposing(false);
     }
@@ -1677,6 +1740,15 @@ export function CanvasStage() {
     if (!box) return -1;
     const r = 9 / t.scale;
     return handleCorners(box).findIndex((c) => Math.hypot(ip.x - c.x, ip.y - c.y) < r);
+  };
+  const hitRotate = (ip: Pt): boolean => {
+    const box = selectionBox();
+    if (!box) return false;
+    const r = 9 / t.scale;
+    return handleCorners(box).some((c) => {
+      const d = Math.hypot(ip.x - c.x, ip.y - c.y);
+      return d >= r && d < r * 2.6;
+    });
   };
   const transformsOf = (ids: string[]): Map<string, LayerTransform> => {
     const m = new Map<string, LayerTransform>();
@@ -1718,7 +1790,6 @@ export function CanvasStage() {
 
   const moveDown = (ip: Pt, e: any) => {
     if (hitHandle(ip) >= 0 && selectedLayerIds.length) {
-      pushHistory();
       const box = selectionBox()!;
       const c = { x: box[0] + box[2] / 2, y: box[1] + box[3] / 2 };
       moveDrag.current = {
@@ -1727,6 +1798,20 @@ export function CanvasStage() {
         startT: transformsOf(selectedLayerIds),
         center: c,
         startDist: Math.hypot(ip.x - c.x, ip.y - c.y) || 1,
+      };
+      beginLiveDrag(selectedLayerIds);
+      return;
+    }
+    // just outside a corner handle = rotate zone (drag rotates about the box centre)
+    if (selectedLayerIds.length && hitRotate(ip)) {
+      const box = selectionBox()!;
+      const c = { x: box[0] + box[2] / 2, y: box[1] + box[3] / 2 };
+      moveDrag.current = {
+        mode: "rotate",
+        start: ip,
+        startT: transformsOf(selectedLayerIds),
+        center: c,
+        startAngle: Math.atan2(ip.y - c.y, ip.x - c.x),
       };
       beginLiveDrag(selectedLayerIds);
       return;
@@ -1742,7 +1827,6 @@ export function CanvasStage() {
         : [lid];
       setSelectedLayerIds(sel);
       setActiveLayer(lid);
-      pushHistory();
       moveDrag.current = { mode: "translate", start: ip, startT: transformsOf(sel) };
       beginLiveDrag(sel);
     } else {
@@ -1751,6 +1835,7 @@ export function CanvasStage() {
     }
   };
 
+  const shiftRef = useRef(false); // live Shift state for rotate snapping
   // blend-mode fallback: coalesce full recomposites to one per animation frame
   const moveRaf = useRef(0);
   const pendingMove = useRef<Pt | null>(null);
@@ -1773,6 +1858,25 @@ export function CanvasStage() {
   const applyMove = (ip: Pt) => {
     const md = moveDrag.current;
     if (!md) return;
+    if ((md.mode === "translate" || md.mode === "scale" || md.mode === "rotate") && !md.pushed) {
+      pushHistory(); // only once a drag actually moves — a plain click stays off the stack
+      md.pushed = true;
+    }
+    if (md.mode === "rotate") {
+      let delta = Math.atan2(ip.y - md.center!.y, ip.x - md.center!.x) - md.startAngle!;
+      if (shiftRef.current) {
+        const snap = Math.PI / 12; // Shift snaps to 15°
+        delta = Math.round(delta / snap) * snap;
+      }
+      setLayers((ls) =>
+        ls.map((L) => {
+          const s0 = md.startT.get(L.id);
+          return s0 ? { ...L, transform: { ...s0, rotation: s0.rotation + delta } } : L;
+        })
+      );
+      setImgVer((v) => v + 1);
+      return;
+    }
     if (md.mode === "translate") {
       const dx = ip.x - md.start.x;
       const dy = ip.y - md.start.y;
@@ -1891,7 +1995,8 @@ export function CanvasStage() {
     pushHistory();
     setLayers((ls) => ls.filter((L) => !selectedLayerIds.includes(L.id)));
     setSelectedLayerIds([]);
-    setActiveLayer(null);
+    // keep the active layer unless it was among the deleted
+    if (activeLayer && selectedLayerIds.includes(activeLayer)) setActiveLayer(null);
     setImgVer((v) => v + 1);
   };
   const setSelOpacity = (v: number) => {
@@ -2010,6 +2115,7 @@ export function CanvasStage() {
     void saveFile(new Blob([json], { type: "application/json" }), "neuclip-project.neuclip");
   };
   const openProject = async (file: File) => {
+   try {
     const text = await file.text();
     const d = await deserializeDoc(text);
     // ids are UUIDs now, but re-map any duplicates from old counter-based files
@@ -2041,7 +2147,12 @@ export function CanvasStage() {
       setBackend(r.backend);
     } catch (e) {
       console.error("re-upload base failed:", e);
+      toastError("Project opened, but re-connecting it to the engine failed — selection tools may be offline.");
     }
+   } catch (e) {
+    console.error("open project failed:", e);
+    toastError("Couldn't open the project — is it a valid .neuclip file?");
+   }
   };
 
   // outpaint: extend the canvas to a target aspect and generatively fill the new region.
@@ -2083,9 +2194,11 @@ export function CanvasStage() {
         undoStack.current = [];
         redoStack.current = [];
         setGenStatus("done");
+        toastSuccess("Canvas extended — the new region was filled.");
       } else setGenStatus("failed");
     } catch (e) {
       console.error("outpaint failed:", e);
+      toastError("Extend failed — the canvas is unchanged.");
       setGenStatus("failed");
     }
   };
@@ -2094,8 +2207,10 @@ export function CanvasStage() {
     if (!img) return;
     if (ratio === null) {
       setDocTransform((tr) => ({ ...tr, crop: undefined }));
+      setCropEditing(false);
       return;
     }
+    setCropEditing(true); // aspect preset seeds the rect; handles then adjust it freely
     const W = img.naturalWidth;
     const H = img.naturalHeight;
     let cw = W;
@@ -2192,11 +2307,13 @@ export function CanvasStage() {
         setMask(new MaskBuffer(img.naturalWidth, img.naturalHeight));
         setSamPoints([]);
         setGenStatus("done");
+        toastSuccess(`Edit complete — added layer "AI edit ${n}"`);
       } else {
         setGenStatus("failed");
       }
     } catch (e) {
       console.error("generate failed:", e);
+      toastError("Generation failed — your selection and image are untouched.");
       setGenStatus("failed");
     }
   };
@@ -2288,6 +2405,7 @@ export function CanvasStage() {
       }
     } catch (e) {
       console.error("shootout failed:", e);
+      toastError("Shootout failed to start — nothing was run.");
       setGenStatus("failed");
     }
   };
@@ -2354,6 +2472,7 @@ export function CanvasStage() {
     setImgVer((v) => v + 1);
     setShootoutRun((cur) => (cur ? { ...cur, winner: tile.modelId } : cur));
     void recordExemplar(tile.modelId, s.intent, tile.prompt);
+    toastSuccess(`Kept ${tile.label} — added as a layer and recorded as the winner.`);
     if (mask) {
       setMask(new MaskBuffer(mask.width, mask.height));
       setSamPoints([]);
@@ -2415,6 +2534,7 @@ export function CanvasStage() {
         decomposing={decomposing}
         onDecompose={runDecompose}
         onExport={exportPng}
+        onExportAs={exportAs}
         onExportCutout={exportCutout}
         canExportCutout={!!mask && !mask.isEmpty()}
       />
@@ -2505,7 +2625,8 @@ export function CanvasStage() {
           onMouseMove={onMouseMove}
           onMouseUp={endDrag}
           onDblClick={() => {
-            if (tool === "lasso" && lassoPts.length > 2) commitLasso(lassoPts);
+            if (cropEditing) setCropEditing(false);
+            else if (tool === "lasso" && lassoPts.length > 2) commitLasso(lassoPts);
             else if (tool === "pen" && pen.anchors.length > 2) commitPen();
           }}
           onMouseLeave={(e: any) => {
@@ -2599,6 +2720,80 @@ export function CanvasStage() {
                   {corners.map(([cx, cy], i) => (
                     <Rect key={i} x={cx - hs} y={cy - hs} width={hs * 2} height={hs * 2} fill="#e9ecf2" stroke="#121419" strokeWidth={1 / t.scale} listening={false} />
                   ))}
+                </>
+              );
+            })()}
+            {docTransform.crop && img && (() => {
+              const [cx0, cy0, cx1, cy1] = docTransform.crop!;
+              const W = img.naturalWidth;
+              const H = img.naturalHeight;
+              const hs = 6 / t.scale;
+              const dim = "rgba(0,0,0,0.55)";
+              const clampCrop = (a: number, b: number, c: number, d: number) => {
+                const x0 = Math.round(Math.max(0, Math.min(a, c - 8)));
+                const y0 = Math.round(Math.max(0, Math.min(b, d - 8)));
+                const x1 = Math.round(Math.min(W - 1, Math.max(c, a + 8)));
+                const y1 = Math.round(Math.min(H - 1, Math.max(d, b + 8)));
+                setDocTransform((tr) => ({ ...tr, crop: [x0, y0, x1, y1] }));
+              };
+              const corners: [number, number][] = [
+                [cx0, cy0],
+                [cx1, cy0],
+                [cx1, cy1],
+                [cx0, cy1],
+              ];
+              return (
+                <>
+                  <Rect x={0} y={0} width={W} height={cy0} fill={dim} listening={false} />
+                  <Rect x={0} y={cy1} width={W} height={Math.max(0, H - cy1)} fill={dim} listening={false} />
+                  <Rect x={0} y={cy0} width={cx0} height={cy1 - cy0} fill={dim} listening={false} />
+                  <Rect x={cx1} y={cy0} width={Math.max(0, W - cx1)} height={cy1 - cy0} fill={dim} listening={false} />
+                  <Rect
+                    x={cx0}
+                    y={cy0}
+                    width={cx1 - cx0}
+                    height={cy1 - cy0}
+                    stroke="#22d3ee"
+                    strokeWidth={1.5 / t.scale}
+                    dash={cropEditing ? undefined : [5 / t.scale, 4 / t.scale]}
+                    listening={false}
+                  />
+                  {cropEditing &&
+                    corners.map(([hx, hy], i) => (
+                      <Rect
+                        key={i}
+                        x={hx - hs}
+                        y={hy - hs}
+                        width={hs * 2}
+                        height={hs * 2}
+                        fill="#22d3ee"
+                        stroke="#0a0c0f"
+                        strokeWidth={1 / t.scale}
+                        draggable
+                        onMouseDown={(e: any) => {
+                          e.cancelBubble = true; // don't let the active tool see this press
+                        }}
+                        onDragMove={(e: any) => {
+                          const nx = e.target.x() + hs;
+                          const ny = e.target.y() + hs;
+                          let [a, b, c, d] = docTransform.crop!;
+                          if (i === 0) {
+                            a = nx;
+                            b = ny;
+                          } else if (i === 1) {
+                            c = nx;
+                            b = ny;
+                          } else if (i === 2) {
+                            c = nx;
+                            d = ny;
+                          } else {
+                            a = nx;
+                            d = ny;
+                          }
+                          clampCrop(a, b, c, d);
+                        }}
+                      />
+                    ))}
                 </>
               );
             })()}
@@ -3125,6 +3320,7 @@ function FileBar({
   decomposing,
   onDecompose,
   onExport,
+  onExportAs,
   onExportCutout,
   canExportCutout,
 }: {
@@ -3145,6 +3341,7 @@ function FileBar({
   decomposing: boolean;
   onDecompose: (g: "simple" | "fine") => void;
   onExport: () => void;
+  onExportAs: (fmt: "png" | "jpeg" | "webp", quality: number) => void;
   onExportCutout: () => void;
   canExportCutout: boolean;
 }) {
@@ -3152,6 +3349,8 @@ function FileBar({
   const importRef = useRef<HTMLInputElement>(null);
   const openRef = useRef<HTMLInputElement>(null);
   const [finishFace, setFinishFace] = useState(false);
+  const [exportFmt, setExportFmt] = useState<"png" | "jpeg" | "webp">("png");
+  const [exportQuality, setExportQuality] = useState(0.92);
   const btn: React.CSSProperties = {
     background: "#181c22",
     color: "#cbd5e1",
@@ -3229,6 +3428,37 @@ function FileBar({
           label="Export cutout (selection only)"
           disabled={!canExportCutout}
           onClick={onExportCutout}
+        />
+        <MenuRow label="Export as">
+          <select
+            value={exportFmt}
+            onChange={(e) => setExportFmt(e.target.value as "png" | "jpeg" | "webp")}
+            style={{ background: "#181c22", color: "#cbd5e1", border: "1px solid #2a2f37", borderRadius: 5, padding: "2px 4px", fontSize: 11 }}
+          >
+            <option value="png">PNG</option>
+            <option value="jpeg">JPEG</option>
+            <option value="webp">WebP</option>
+          </select>
+          {exportFmt !== "png" && (
+            <>
+              <input
+                type="range"
+                min={0.4}
+                max={1}
+                step={0.02}
+                value={exportQuality}
+                onChange={(e) => setExportQuality(Number(e.target.value))}
+                title="Quality"
+                style={{ flex: 1, accentColor: "#22d3ee" }}
+              />
+              <span style={{ width: 30, textAlign: "right" }}>{Math.round(exportQuality * 100)}</span>
+            </>
+          )}
+        </MenuRow>
+        <MenuItem
+          label={`Export ${exportFmt.toUpperCase()}…`}
+          disabled={!hasImage}
+          onClick={() => onExportAs(exportFmt, exportQuality)}
         />
         <MenuDivider />
         <MenuRow label="Finish">

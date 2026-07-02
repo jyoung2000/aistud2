@@ -5,6 +5,7 @@ import { StatusBar, type SidecarState } from "./panels/statusBar";
 import { InspectorPipeline } from "./panels/inspectorPipeline";
 import { SettingsModal } from "./panels/settingsModal";
 import { CanvasStage } from "./canvas/canvasStage";
+import { Toasts } from "./ui/toast";
 
 // lazy — onboarding only matters on first run / on demand; keep it out of the main chunk.
 // The gate key is checked inline so the module isn't pulled in just to read localStorage.
@@ -93,6 +94,7 @@ export default function App() {
       </div>
 
       <StatusBar state={state} />
+      <Toasts />
 
       <SettingsModal
         open={settingsOpen}

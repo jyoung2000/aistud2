@@ -166,7 +166,23 @@ export function LayersPanel({
           )}
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ fontSize: 9, color: "#5c6473" }}>opacity</span>
-            <input type="range" min={0} max={1} step={0.01} defaultValue={1} onChange={(e) => onSelOpacity(Number(e.target.value))} style={{ flex: 1, accentColor: "#e9ecf2" }} />
+            {(() => {
+              // controlled: seeded from the selection's common opacity (1 when mixed)
+              const sel = layers.filter((l) => selectedIds.includes(l.id));
+              const common =
+                sel.length && sel.every((l) => l.opacity === sel[0].opacity) ? sel[0].opacity : 1;
+              return (
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={common}
+                  onChange={(e) => onSelOpacity(Number(e.target.value))}
+                  style={{ flex: 1, accentColor: "#e9ecf2" }}
+                />
+              );
+            })()}
           </div>
         </div>
       )}
@@ -292,6 +308,15 @@ export function LayersPanel({
 
               {L.kind === "adjustment" && L.adjust && (
                 <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 2 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 9.5, color: "#94a3b8", cursor: "pointer" }} title="Apply only where the layer directly below has pixels">
+                    <input
+                      type="checkbox"
+                      checked={L.adjust!.clip}
+                      onChange={(e) => onAdjust(L.id, { ...L.adjust!, clip: e.target.checked })}
+                      style={{ accentColor: "#22d3ee" }}
+                    />
+                    clip to layer below
+                  </label>
                   {ADJUSTS.map((k) => (
                     <label key={k} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9.5, color: "#94a3b8" }}>
                       <span style={{ width: 64 }}>{k}</span>

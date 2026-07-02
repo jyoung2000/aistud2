@@ -44,10 +44,18 @@ import threading
 _select_lock = threading.Lock()
 _refine_lock = threading.Lock()
 
-# The webview origin is not fixed in dev; allow all (loopback-only service).
+# Loopback-only service, but keep CORS tight anyway: the Vite dev server and the Tauri
+# webview origins only. The single-file app is same-origin (no CORS needed). Set
+# NEUCLIP_DEV_CORS=1 to open it up while developing against an unusual origin.
+_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "tauri://localhost",
+    "http://tauri.localhost",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"] if os.environ.get("NEUCLIP_DEV_CORS") == "1" else _ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

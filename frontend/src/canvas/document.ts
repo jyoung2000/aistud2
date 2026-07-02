@@ -314,7 +314,69 @@ export function composite(
     if (!L.visible || L.opacity <= 0) continue;
 
     if (L.kind === "adjustment" && L.adjust) {
-      // affects everything composited so far (clip-to-below is a future refinement)
+      if (L.adjust.clip) {
+        // clip-to-below: adjust only where the layer directly below has pixels — apply
+        // the adjustment to a copy, clip the copy to the below-layer's (transformed)
+        // alpha, and composite it back over the running result.
+        const idx = layers.indexOf(L);
+        let below: Layer | null = null;
+        for (let j = idx - 1; j >= 0; j--) {
+          const cand = layers[j];
+          if (cand.visible && cand.kind !== "adjustment") {
+            below = cand;
+            break;
+          }
+        }
+        const belowImg = below ? images.get(below.id) : null;
+        if (below && belowImg) {
+          // the below layer's shape, drawn exactly as the main path draws it
+          const shape = document.createElement("canvas");
+          shape.width = width;
+          shape.height = height;
+          const sctx = shape.getContext("2d")!;
+          const stmp = document.createElement("canvas");
+          stmp.width = width;
+          stmp.height = height;
+          const stctx = stmp.getContext("2d")!;
+          stctx.drawImage(belowImg, 0, 0, width, height);
+          if (below.mask) {
+            stctx.globalCompositeOperation = "destination-in";
+            stctx.drawImage(maskCanvas(below.mask, width, height), 0, 0);
+            stctx.globalCompositeOperation = "source-over";
+          }
+          if (hasTransform(below.transform)) {
+            const [bx, by, bw, bh] = below.bounds ?? [0, 0, width, height];
+            const cx = bx + bw / 2;
+            const cy = by + bh / 2;
+            const tr = below.transform;
+            sctx.save();
+            sctx.translate(cx + tr.tx, cy + tr.ty);
+            sctx.rotate(tr.rotation);
+            sctx.scale(tr.scale, tr.scale);
+            sctx.translate(-cx, -cy);
+            sctx.drawImage(stmp, 0, 0);
+            sctx.restore();
+          } else {
+            sctx.drawImage(stmp, 0, 0);
+          }
+          // adjusted copy of the running composite, clipped to the below-layer alpha
+          const adjusted = document.createElement("canvas");
+          adjusted.width = width;
+          adjusted.height = height;
+          const actx = adjusted.getContext("2d")!;
+          actx.drawImage(out, 0, 0);
+          applyAdjust(adjusted, L.adjust);
+          actx.globalCompositeOperation = "destination-in";
+          actx.drawImage(shape, 0, 0);
+          actx.globalCompositeOperation = "source-over";
+          ctx.globalAlpha = L.opacity;
+          ctx.drawImage(adjusted, 0, 0);
+          ctx.globalAlpha = 1;
+          continue;
+        }
+        // no below layer / no pixels: nothing to clip to — fall through to whole-below
+      }
+      // affects everything composited so far
       if (L.opacity >= 0.999) {
         applyAdjust(out, L.adjust);
       } else {
