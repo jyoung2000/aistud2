@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { COLOR_GENERATION } from "../constants";
 import {
   ROLE_BLURB,
@@ -10,7 +10,11 @@ import {
 } from "../api/referenceModels";
 import { extractPoseFromUpload, renderControlImage } from "../api/pose";
 import { blankPose, type Pose } from "../pose/poseModel";
-import { PoseEditor } from "../pose/PoseEditor";
+
+// lazy — the Pose Editor is a full workspace; keep it out of the initial chunk
+const PoseEditor = lazy(() =>
+  import("../pose/PoseEditor").then((m) => ({ default: m.PoseEditor }))
+);
 
 const AMBER = COLOR_GENERATION;
 const ROLES: ReferenceRole[] = ["replace", "pose", "style"];
@@ -589,15 +593,17 @@ function PosePanel({
       {err && <span style={{ fontSize: 10.5, color: "#e0857a" }}>{err}</span>}
 
       {open && img && pose && (
-        <PoseEditor
-          open={open}
-          imageSrc={img.src}
-          width={img.w}
-          height={img.h}
-          pose={pose}
-          onApply={onApply}
-          onClose={() => setOpen(false)}
-        />
+        <Suspense fallback={null}>
+          <PoseEditor
+            open={open}
+            imageSrc={img.src}
+            width={img.w}
+            height={img.h}
+            pose={pose}
+            onApply={onApply}
+            onClose={() => setOpen(false)}
+          />
+        </Suspense>
       )}
     </div>
   );

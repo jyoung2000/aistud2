@@ -370,6 +370,31 @@ export function composite(
   return out;
 }
 
+/**
+ * A layer's content (its pixels clipped to its mask) as a standalone full-doc canvas —
+ * used to render a dragged layer as its own Konva node during Move-tool drags so the
+ * full document doesn't recomposite per mousemove. Transform is NOT applied here; the
+ * node applies it live via Konva props (same centre math as composite()).
+ */
+export function layerContentCanvas(
+  layer: Layer,
+  image: CanvasImageSource,
+  width: number,
+  height: number
+): HTMLCanvasElement {
+  const tmp = document.createElement("canvas");
+  tmp.width = width;
+  tmp.height = height;
+  const tctx = tmp.getContext("2d")!;
+  tctx.drawImage(image, 0, 0, width, height);
+  if (layer.mask) {
+    tctx.globalCompositeOperation = "destination-in";
+    tctx.drawImage(maskCanvas(layer.mask, width, height), 0, 0);
+    tctx.globalCompositeOperation = "source-over";
+  }
+  return tmp;
+}
+
 const clamp8 = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : v);
 
 export function applyAdjust(canvas: HTMLCanvasElement, adjust: AdjustSpec): void {

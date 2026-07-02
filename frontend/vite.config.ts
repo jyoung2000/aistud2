@@ -12,5 +12,15 @@ export default defineConfig({
   build: {
     target: "es2021",
     outDir: "dist",
+    rollupOptions: {
+      output: {
+        // keep every chunk under the 500 kB warning: the canvas engine (konva) and the
+        // react runtime split out of the app chunk and load in parallel
+        manualChunks: {
+          konva: ["konva", "react-konva"],
+          react: ["react", "react-dom"],
+        },
+      },
+    },
   },
 });

@@ -41,6 +41,7 @@ import {
 import { COLOR_GENERATION } from "../constants";
 import {
   composite as compositeDoc,
+  layerContentCanvas,
   newLayerId,
   remapDuplicateLayerIds,
   serializeDoc,
@@ -144,7 +145,6 @@ export function CanvasStage() {
   const [t, setT] = useState<ViewTransform>({ scale: 1, x: 0, y: 0 });
   const [mask, setMask] = useState<MaskBuffer | null>(null);
   const [cursor, setCursor] = useState<Pt | null>(null);
-  const [dash, setDash] = useState(0);
   const [tool, setTool] = useState<Tool>("select");
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [panning, setPanning] = useState(false);
@@ -231,13 +231,20 @@ export function CanvasStage() {
   // view mode + swipe live in the shared view-state store (the StatusBar hosts the switch)
   const { viewMode, swipe } = useViewState();
 
+  // Move-tool live drag: the dragged layers render as their own Konva nodes over a FROZEN
+  // composite that excludes them, so the full document is NOT recomposited per mousemove.
+  const [dragExclude, setDragExclude] = useState<string[]>([]);
+  const frozenComposite = useRef<HTMLCanvasElement | null>(null);
+  const dragCanvases = useRef<Map<string, HTMLCanvasElement>>(new Map());
+
   const composite = useMemo(() => {
     if (!img) return null;
+    if (dragExclude.length && frozenComposite.current) return frozenComposite.current;
     return compositeDoc(img, img.naturalWidth, img.naturalHeight, layers, layerImgs.current, {
       drawBase: !decomposed,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [img, layers, imgVer, decomposed]);
+  }, [img, layers, imgVer, decomposed, dragExclude]);
 
   // True when the current selection overlaps an imported layer that isn't baked into the base
   // yet — the AI won't see those pixels until "Flatten for AI".
@@ -339,11 +346,24 @@ export function CanvasStage() {
     return () => ro.disconnect();
   }, []);
 
-  // marching-ants animation
+  // marching-ants animation — mutate the Konva nodes directly inside one RAF loop and
+  // batchDraw, so the 3,000-line component does NOT re-render at 60 fps (Konva pattern).
+  const antRefs = useRef<any[]>([]);
+  const tRef = useRef(t);
+  tRef.current = t;
   useEffect(() => {
     let raf = 0;
+    let d = 0;
     const tick = () => {
-      setDash((d) => (d + 0.4) % 8);
+      d = (d + 0.4) % 8;
+      let konvaLayer: any = null;
+      for (const node of antRefs.current) {
+        if (node) {
+          node.dashOffset(d / tRef.current.scale);
+          konvaLayer = node.getLayer();
+        }
+      }
+      konvaLayer?.batchDraw();
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -547,6 +567,9 @@ export function CanvasStage() {
     [mask]
   );
   const loops = useMemo(() => (mask ? mask.outline() : []), [mask, maskCanvas]);
+  useEffect(() => {
+    antRefs.current.length = loops.length; // drop refs to unmounted ant nodes
+  }, [loops]);
   const brushPreviewCanvas = useMemo(
     () => (brushPreview && !brushPreview.isEmpty() ? maskToCanvas(brushPreview) : null),
     [brushPreview]
@@ -1661,6 +1684,38 @@ export function CanvasStage() {
     return m;
   };
 
+  // Freeze a composite that excludes the dragged layers + cache their masked content, so
+  // mousemoves only move Konva nodes. Falls back (returns false) when a dragged layer
+  // needs stack-order blending (blend mode ≠ normal) or has no cached image.
+  const beginLiveDrag = (ids: string[]) => {
+    if (!img || viewMode !== "normal") return;
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    const sel = layers.filter((L) => ids.includes(L.id) && L.kind !== "adjustment");
+    if (!sel.length || sel.some((L) => L.blendMode !== "normal")) return;
+    const canvases = new Map<string, HTMLCanvasElement>();
+    for (const L of sel) {
+      const src = layerImgs.current.get(L.id);
+      if (!src) return;
+      canvases.set(L.id, layerContentCanvas(L, src, W, H));
+    }
+    frozenComposite.current = compositeDoc(
+      img, W, H,
+      layers.filter((L) => !canvases.has(L.id)),
+      layerImgs.current,
+      { drawBase: !decomposed }
+    );
+    dragCanvases.current = canvases;
+    setDragExclude([...canvases.keys()]);
+  };
+  const endLiveDrag = () => {
+    if (frozenComposite.current || dragExclude.length) {
+      frozenComposite.current = null;
+      dragCanvases.current = new Map();
+      setDragExclude([]); // one full recomposite on drop
+    }
+  };
+
   const moveDown = (ip: Pt, e: any) => {
     if (hitHandle(ip) >= 0 && selectedLayerIds.length) {
       pushHistory();
@@ -1673,6 +1728,7 @@ export function CanvasStage() {
         center: c,
         startDist: Math.hypot(ip.x - c.x, ip.y - c.y) || 1,
       };
+      beginLiveDrag(selectedLayerIds);
       return;
     }
     const lid = layerAt(ip);
@@ -1688,13 +1744,33 @@ export function CanvasStage() {
       setActiveLayer(lid);
       pushHistory();
       moveDrag.current = { mode: "translate", start: ip, startT: transformsOf(sel) };
+      beginLiveDrag(sel);
     } else {
       moveDrag.current = { mode: "marquee", start: ip, startT: new Map(), shift: e.evt.shiftKey };
       setMarquee([ip.x, ip.y, 0, 0]);
     }
   };
 
+  // blend-mode fallback: coalesce full recomposites to one per animation frame
+  const moveRaf = useRef(0);
+  const pendingMove = useRef<Pt | null>(null);
   const moveMove = (ip: Pt) => {
+    const md = moveDrag.current;
+    if (!md) return;
+    if ((md.mode === "translate" || md.mode === "scale") && dragExclude.length === 0) {
+      pendingMove.current = ip;
+      if (!moveRaf.current) {
+        moveRaf.current = requestAnimationFrame(() => {
+          moveRaf.current = 0;
+          if (pendingMove.current && moveDrag.current) applyMove(pendingMove.current);
+        });
+      }
+      return;
+    }
+    applyMove(ip);
+  };
+
+  const applyMove = (ip: Pt) => {
     const md = moveDrag.current;
     if (!md) return;
     if (md.mode === "translate") {
@@ -1730,6 +1806,18 @@ export function CanvasStage() {
     const md = moveDrag.current;
     moveDrag.current = null;
     setMarquee(null);
+    if (moveRaf.current) {
+      cancelAnimationFrame(moveRaf.current);
+      moveRaf.current = 0;
+      if (pendingMove.current && md && (md.mode === "translate" || md.mode === "scale")) {
+        // apply the final coalesced move before committing
+        moveDrag.current = md;
+        applyMove(pendingMove.current);
+        moveDrag.current = null;
+      }
+    }
+    pendingMove.current = null;
+    endLiveDrag();
     if (md?.mode === "marquee" && ip) {
       const [W, H] = dims();
       const rect: LayerBounds = [
@@ -2458,6 +2546,33 @@ export function CanvasStage() {
             ) : (
               img && composite && <KImage image={composite} x={0} y={0} />
             )}
+            {/* live-dragged layers ride as their own nodes over the frozen composite */}
+            {img &&
+              viewMode === "normal" &&
+              dragExclude.map((id) => {
+                const L = layers.find((l) => l.id === id);
+                const c = dragCanvases.current.get(id);
+                if (!L || !c || !L.visible) return null;
+                const [bx, by, bw, bh] = L.bounds ?? [0, 0, img.naturalWidth, img.naturalHeight];
+                const cx = bx + bw / 2;
+                const cy = by + bh / 2;
+                const tr = L.transform ?? IDENTITY_TRANSFORM;
+                return (
+                  <KImage
+                    key={id}
+                    image={c}
+                    x={cx + tr.tx}
+                    y={cy + tr.ty}
+                    offsetX={cx}
+                    offsetY={cy}
+                    scaleX={tr.scale}
+                    scaleY={tr.scale}
+                    rotation={(tr.rotation * 180) / Math.PI}
+                    opacity={L.opacity}
+                    listening={false}
+                  />
+                );
+              })}
             {viewMode === "diff" && diff && <KImage image={diff.canvas} x={0} y={0} listening={false} />}
             {tool === "move" && marquee && (
               <Rect
@@ -2508,12 +2623,14 @@ export function CanvasStage() {
             {loops.map((loop, i) => (
               <Line
                 key={i}
+                ref={(n: any) => {
+                  antRefs.current[i] = n;
+                }}
                 points={loop.flatMap((p) => [p.x, p.y])}
                 closed
                 stroke={COLOR_SELECTION}
                 strokeWidth={1 / t.scale}
                 dash={[4 / t.scale, 4 / t.scale]}
-                dashOffset={dash / t.scale}
                 listening={false}
                 perfectDrawEnabled={false}
               />

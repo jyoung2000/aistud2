@@ -37,6 +37,13 @@ app = FastAPI(title=f"{APP_NAME} sidecar")
 _selector = SmartSelector()
 _refiner = EdgeRefiner()
 
+# The FastAPI threadpool can interleave requests (brush-snap vs decompose): the selector's
+# set_image + predict pair and the refiner are stateful singletons, so serialize access.
+import threading
+
+_select_lock = threading.Lock()
+_refine_lock = threading.Lock()
+
 # The webview origin is not fixed in dev; allow all (loopback-only service).
 app.add_middleware(
     CORSMiddleware,
@@ -101,7 +108,8 @@ async def load_image(file: UploadFile = File(...)) -> dict:
     image_id = uuid.uuid4().hex
     session = imaging.ImageSession(image_id, rgb)
     imaging.set_active(session)
-    _selector.set_image(rgb, image_id)  # SAM encodes once here
+    with _select_lock:
+        _selector.set_image(rgb, image_id)  # SAM encodes once here
     return {
         "id": image_id,
         "width": session.width,
@@ -116,16 +124,17 @@ def select(body: SelectIn) -> dict:
         session = imaging.require_active(body.id)
     except KeyError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    _selector.set_image(session.rgb, session.image_id)
     note = None
-    if body.semantic:
-        mask, available = _selector.semantic(body.semantic)
-        if not available:
-            note = "semantic select needs Grounding-DINO weights on the target GPU"
-    elif body.subject:
-        mask = _selector.select_subject()
-    else:
-        mask = _selector.select(body.points, body.labels, body.box)
+    with _select_lock:
+        _selector.set_image(session.rgb, session.image_id)
+        if body.semantic:
+            mask, available = _selector.semantic(body.semantic)
+            if not available:
+                note = "semantic select needs Grounding-DINO weights on the target GPU"
+        elif body.subject:
+            mask = _selector.select_subject()
+        else:
+            mask = _selector.select(body.points, body.labels, body.box)
     return {
         "mask_png": imaging.png_to_base64(mask),
         "width": session.width,
@@ -239,13 +248,15 @@ def decompose(body: DecomposeIn) -> dict:
         raise HTTPException(status_code=409, detail=str(e))
     import numpy as np
 
-    _selector.set_image(session.rgb, session.image_id)
-    regions = _selector.decompose(body.granularity)
+    with _select_lock:
+        _selector.set_image(session.rgb, session.image_id)
+        regions = _selector.decompose(body.granularity)
     out = []
     for r in regions:
         m = r["mask"]
         # refine the cut edge (BiRefNet on target; morphological feather fallback)
-        alpha = _refiner.refine(session.rgb, m)
+        with _refine_lock:
+            alpha = _refiner.refine(session.rgb, m)
         binm = (alpha > 127).astype(np.uint8) * 255
         ys, xs = np.where(binm > 0)
         bounds = (
@@ -394,7 +405,8 @@ def refine(body: RefineIn) -> dict:
     mask = imaging.base64_to_gray(body.mask_png)
     if mask.shape[:2] != (session.height, session.width):
         raise HTTPException(status_code=400, detail="mask size != image size")
-    alpha = _refiner.refine(session.rgb, mask)
+    with _refine_lock:
+        alpha = _refiner.refine(session.rgb, mask)
     return {"mask_png": imaging.png_to_base64(alpha), "backend": _refiner.backend}
 
 

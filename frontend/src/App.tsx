@@ -1,11 +1,24 @@
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { APP_NAME } from "./constants";
 import { waitForSidecar } from "./api/sidecar";
 import { StatusBar, type SidecarState } from "./panels/statusBar";
 import { InspectorPipeline } from "./panels/inspectorPipeline";
 import { SettingsModal } from "./panels/settingsModal";
-import { Onboarding, hasOnboarded } from "./panels/onboarding";
 import { CanvasStage } from "./canvas/canvasStage";
+
+// lazy — onboarding only matters on first run / on demand; keep it out of the main chunk.
+// The gate key is checked inline so the module isn't pulled in just to read localStorage.
+const Onboarding = lazy(() =>
+  import("./panels/onboarding").then((m) => ({ default: m.Onboarding }))
+);
+const ONBOARDED_KEY = "neuclip.onboarded.v3"; // must match panels/onboarding.tsx
+function hasOnboarded(): boolean {
+  try {
+    return localStorage.getItem(ONBOARDED_KEY) === "1";
+  } catch {
+    return true;
+  }
+}
 
 export default function App() {
   const [state, setState] = useState<SidecarState>({ kind: "connecting" });
@@ -91,7 +104,11 @@ export default function App() {
         }}
       />
 
-      <Onboarding open={onboardOpen} onClose={() => setOnboardOpen(false)} health={health} />
+      {onboardOpen && (
+        <Suspense fallback={null}>
+          <Onboarding open={onboardOpen} onClose={() => setOnboardOpen(false)} health={health} />
+        </Suspense>
+      )}
     </div>
   );
 }
