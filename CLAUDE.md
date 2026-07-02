@@ -120,8 +120,16 @@ the UI ("seeds locked per model for re-runs; not comparable across models").
 - Frontend: `panels/modelCompare.tsx` (set selection + chips + cost card),
   `panels/inspectorPipeline.tsx` hosts the COMPARE toggle. Paradigm/cost stubbed in
   `api/referenceModels.ts` until the real registry (Phase 7).
-- Shootout milestones: [x] M1 compare-set UI · [x] M2 N-prompt synthesis · [ ] M3 parallel
-  run+queue · [ ] M4 comparison view · [ ] M5 commit+feedback · [ ] M6 auto-rank.
+- Shootout milestones: [x] M1 compare-set UI · [x] M2 N-prompt synthesis · [x] M3 parallel
+  run+queue · [x] M4 comparison view · [x] M5 commit+feedback · [ ] M6 auto-rank.
+  M3–M5: sidecar `POST /shootout` (ONE shared send region — pose/controlnet widens the pad
+  for the whole run; per-model profile-synthesized prompt; per-model seed = stable hash of
+  the model id; partial failure isolated per job; mock path returns distinct terminal
+  tiles). Frontend: COMPARE publishes `compareMode/compareSet` via `state/genConfig.ts`;
+  the Generate button becomes "Run shootout (N models · ~X¢)"; tiles render in the
+  GenerateBar (preview/latency/expandable prompt/per-tile retry). "Keep" composites the
+  tile as an ai-edit layer, records the winner, and appends the (intent → prompt) pair via
+  `POST /profiles/exemplar` (append-only, capped 20, user layer in the config dir).
   M2: one shared intent (+ optional subject + shared reference role) → one tuned prompt per
   model via `api/promptSynthesis.ts` `synthesize()` (paradigm transform: instruction =
   imperative+preservation, inpaint = result-description, controlnet = identity+control,
@@ -187,8 +195,24 @@ control signal — the **edited** rig, not the raw extraction, becomes the contr
 - **Dev-from-source launchers (`launchers/`, advanced):** `Start Neuclip Studio.command` /
   `.bat` auto-install toolchains and run the Tauri dev GUI. De-emphasized vs the easy path.
 
+## Layout & width budget (post-audit fix)
+- **Top bars must each fit ≤760 px** so 1280×720 works with both side panels open
+  (1280 − 320 inspector − 240 layers = 720 canvas column; the layers panel collapses to a
+  28 px rail, persisted in localStorage `neuclip.layersPanel.collapsed`).
+- ZoomBar: icon-only tool buttons (7 tools incl. Wand; labels in tooltips) + compact
+  selection ops + zoom group; `flexWrap` safety net. FileBar: **File** and **Image**
+  dropdown menus (`ui/menu.tsx` — hand-rolled popover, outside-click/Esc close) hold
+  open/save/import/export(+Export As…)/finish and crop/extend/straighten/separate/flatten/
+  adjustment; only Flatten-for-AI + Auto-separate stay inline.
+- The view-mode switch (Edit/A|B/Diff + swipe + diff%), cursor readout, sel%, and the
+  select-backend badge live in the **StatusBar**, bridged from the canvas via
+  `state/viewState.ts` (external store, same pattern as genConfig).
+- Verified with Playwright at 1280×720 / 1366×768 / 1920×1080: no horizontal clipping,
+  `document.body.scrollWidth <= innerWidth`, every bar `scrollWidth <= clientWidth`.
+
 ## Sidecar API surface (target)
 `/health` `/settings` `/load` `/select` `/refine` `/livewire/costmap` `/generate` `/poll`
+`/shootout` `/profiles/exemplar`
 - **`/settings` (IMPLEMENTED):** `GET` returns non-secret status (which keys are set, source
   config|env, masked `…last4` hint, config path); `POST` saves keys. Secrets stored in
   `~/.neuclip/config.json` (override `NEUCLIP_CONFIG_DIR`), chmod 600, never returned raw.
@@ -259,6 +283,25 @@ Layers/doc: **Cmd/Ctrl+J** layer-via-copy (selection→new movable layer, `layer
 **Cmd/Ctrl+Z / Shift+Z / Ctrl+Y** undo/redo (zoom/pan stay off the stack).
 
 ## Conventions / decisions log
+- **Profile user layer lives in the config dir** (`settings.config_dir()/profiles`, i.e.
+  `~/.neuclip/profiles`) — writable in frozen builds; the bundled `profiles/store` dir is
+  a read-only legacy fallback for loads only. Exemplars append to the same user layer.
+- **Job store memory**: `JobStore` caps at 50 jobs (LRU) and drops the numpy buffers AND
+  the served result_png once a job's terminal payload has been returned (the frontend
+  never re-polls terminal jobs; re-polls still get the terminal status).
+- **Layer ids are UUIDs** (`crypto.randomUUID`); `remapDuplicateLayerIds` heals old
+  counter-based `.neuclip` files on open.
+- **Fractional alpha end-to-end**: mask codecs never binarize (select.ts, generate.ts),
+  sidecar `feather_alpha` treats the incoming mask as coverage, `MaskBuffer.shrink` is a
+  box-min erode. Feathered selections blend fractionally in the composite (verified).
+- **Saves/exports go through `api/saveFile.ts`** (Tauri dialog+fs plugins when in the
+  shell — WebKitGTK ignores `<a download>` — anchor fallback otherwise).
+- **CORS** restricted to the Vite dev + Tauri origins; `NEUCLIP_DEV_CORS=1` reopens it.
+- **Toasts** (`ui/toast.tsx`): every user-facing action reports success/failure visibly.
+- **Verified model slugs (2026-07)**: `qwen-image/edit-2511`, `qwen-image/edit-plus`,
+  `flux-fill-dev`, `flux-kontext-dev` (confirmed); `ideogram-ai/ideogram-character` slug
+  verified but its inpaint fields are not → stays `confirmed_slug=False`. Qwen edit
+  models take an `images` ARRAY (crop first, reference second).
 - **Device selection** (`sidecar/app/device.py`): `cuda` if `torch.cuda.is_available()`
   else `cpu`. `gpu_name` from `torch.cuda.get_device_name(0)` when present. torch is
   treated as an OPTIONAL import in Phase 0 so `/health` works even before the heavy ML
