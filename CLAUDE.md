@@ -195,6 +195,47 @@ control signal — the **edited** rig, not the raw extraction, becomes the contr
 - **Dev-from-source launchers (`launchers/`, advanced):** `Start Neuclip Studio.command` /
   `.bat` auto-install toolchains and run the Tauri dev GUI. De-emphasized vs the easy path.
 
+## UI shell (redesign pass — "self-explanatory first")
+- **Vertical tool rail** (44 px, left): 7 icon-only tools (Move/Select/Lasso/Pen/Wand/
+  Brush/Hand; lasso long-press/right-click flyout for its 3 modes) + zoom group. Active
+  tool = cyan fill. `ui/tooltip.tsx` (150 ms styled tooltip: Name — description · [Key];
+  also carries why-disabled reasons).
+- **One contextual options bar** under the FileBar shows ONLY the active tool's options;
+  advanced selection ops sit behind "⋯ More". FileBar = File/Image menus + Flatten +
+  Auto-separate + undo/redo.
+- **Right-side story**: canvas | Layers panel | AI panel. Generate bar: amber-bordered
+  primary prompt, model breadcrumb above, dims to 40% + teach-line when nothing is
+  selected, live progress on the button itself.
+- **Design tokens** in `ui/tokens.ts` (spacing/type/radii, cyan=selection amber=AI
+  blue=file, neutral ramp, shared btn/field/sectionHeader). Focus rings + uniform
+  disabled in `src/index.css`.
+- **Empty state** = drop-zone card (drop anywhere opens; drop on an open doc imports as a
+  layer) + Open (⌘O) + "Try the sample image" (`public/sample.jpg`, bundled synthetic
+  person+ball+background so every tool demos).
+- Cursors: crosshair only for selection tools; Move=arrow; Brush hides the OS cursor
+  (ring only); Hand/Space=grab.
+
+## Onboarding architecture (4 independent layers)
+1. **Guided First Edit** (`panels/tutorial.tsx` + `state/tutorial.ts`): first run shows a
+   ONE-screen welcome (sample photo / own image / skip) → 4 do-it-yourself steps on the
+   real app (select → prompt (pre-filled) → generate → layer), each advancing on the real
+   milestone; after generate the Diff view flashes 2 s as the crop-only proof. Done card
+   offers the 5-stop interface tour. Esc/✕ skips; replay from ? Help.
+2. **Contextual coach marks** (`ui/coachmarks.tsx`): one-time single-sentence tips fired
+   at first relevance (tool picked, first selection, import, 2nd AI edit, GPU idle …),
+   tracked as `neuclip.tip.<key>`, max one visible, never during the tutorial, global
+   kill-switch in Settings (`neuclip.tips.disabled`).
+3. **Persistent help** (`panels/help.tsx`): ? Help menu; **Feature Finder** (⌘K palette
+   over `ui/featureIndex.ts`, ~40 entries) spotlights any feature's location via
+   `ui/spotlight.tsx`; `?` opens the shortcut overlay GENERATED from the featureIndex.
+4. **Deferred key setup + checklist**: no key ask up front — an amber "preview mode"
+   banner in the AI panel opens Settings at the moment of motivation ("Live — N models"
+   toast after save). Getting-started checklist (5 items) lives atop the Layers panel,
+   driven by `state/milestones.ts`, rows spotlight their feature, auto-dismisses at 5/5.
+- **RULE: every new feature ships with a `featureIndex.ts` entry + a `data-tour`
+  attribute on its element (+ optionally a coach mark).** The tutorial/tour/tips all key
+  off `state/milestones.ts` — emit a milestone when adding a new user-visible action.
+
 ## Layout & width budget (post-audit fix)
 - **Top bars must each fit ≤760 px** so 1280×720 works with both side panels open
   (1280 − 320 inspector − 240 layers = 720 canvas column; the layers panel collapses to a

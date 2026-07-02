@@ -66,6 +66,8 @@ import { runShootout, recordExemplar } from "../api/shootout";
 import { modelById } from "../api/referenceModels";
 import { getGenConfig, useGenConfig } from "../state/genConfig";
 import { toastError, toastSuccess, toast } from "../ui/toast";
+import { emitMilestone } from "../state/milestones";
+import { fireTip } from "../ui/coachmarks";
 import { setViewState, useViewState } from "../state/viewState";
 import { Menu, MenuItem, MenuRow, MenuDivider } from "../ui/menu";
 import { HUE, NEUTRAL, RADII, TYPE, btn, field, divider } from "../ui/tokens";
@@ -333,15 +335,57 @@ export function CanvasStage() {
   const drag = useRef<{ start: Pt; startT: ViewTransform; pan: boolean; moved: boolean; down: Pt } | null>(null);
   const openInputRef = useRef<HTMLInputElement>(null); // ⌘O target
 
+  // onboarding/tutorial hooks: open the sample or the picker, accept a prompt suggestion
+  useEffect(() => {
+    const onSample = () => void openSample();
+    const onOpen = () => openInputRef.current?.click();
+    const onSuggest = (e: Event) => {
+      const v = (e as CustomEvent<string>).detail;
+      if (v) setPrompt((cur) => (cur.trim() ? cur : v));
+    };
+    window.addEventListener("neuclip:open-sample", onSample);
+    window.addEventListener("neuclip:open-image", onOpen);
+    window.addEventListener("neuclip:suggest-prompt", onSuggest);
+    return () => {
+      window.removeEventListener("neuclip:open-sample", onSample);
+      window.removeEventListener("neuclip:open-image", onOpen);
+      window.removeEventListener("neuclip:suggest-prompt", onSuggest);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // first-time coach marks per tool (one sentence, once ever, never during the tutorial)
+  useEffect(() => {
+    if (!img) return;
+    if (tool === "lasso") fireTip("lasso");
+    else if (tool === "magic-brush") fireTip("brush");
+    else if (tool === "pen") fireTip("pen");
+    else if (tool === "wand") fireTip("wand");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool, img]);
+
+  // a selection that sits unused for 5s → nudge toward Generate (once ever)
+  useEffect(() => {
+    if (!mask || mask.isEmpty() || genStatus !== "idle") return;
+    const t5 = window.setTimeout(() => fireTip("ready-to-generate"), 5000);
+    return () => window.clearTimeout(t5);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mask, genStatus]);
+
   // publish status values the StatusBar renders (view-mode switch, readouts, backend badge)
   useEffect(() => {
+    const hasSel = !!mask && !mask.isEmpty();
     setViewState({
       hasImage: !!img,
       cursor,
       backend,
       busy,
-      selPct: mask && !mask.isEmpty() ? (mask.area() / (mask.width * mask.height)) * 100 : 0,
+      selPct: hasSel ? (mask!.area() / (mask!.width * mask!.height)) * 100 : 0,
     });
+    if (hasSel) {
+      emitMilestone("select");
+      fireTip("selection-ops");
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [img, cursor, backend, busy, mask]);
 
@@ -623,6 +667,8 @@ export function CanvasStage() {
     const image = new window.Image();
     image.onload = () => {
       setImg(image);
+      emitMilestone("image-open");
+      fireTip("toolrail");
       setMask(new MaskBuffer(image.naturalWidth, image.naturalHeight));
       setT(fitTransform(image.naturalWidth, image.naturalHeight, vp.w, vp.h));
       setSamPoints([]);
@@ -692,6 +738,8 @@ export function CanvasStage() {
       const placed = new window.Image();
       placed.onload = () => {
         pushHistory();
+        emitMilestone("import");
+        fireTip("import-flatten");
         const id = newLayerId();
         layerImgs.current.set(id, placed);
         const n = layers.filter((l) => l.kind === "imported").length + 1;
@@ -1503,6 +1551,8 @@ export function CanvasStage() {
   const exportPng = () => {
     const c = exportCanvas();
     if (!c) return;
+    emitMilestone("save");
+    fireTip("save-export");
     c.toBlob((b) => b && void saveFile(b, "neuclip-export.png"), "image/png");
   };
   const exportAs = (fmt: "png" | "jpeg" | "webp", quality: number) => {
@@ -1534,16 +1584,20 @@ export function CanvasStage() {
   };
 
   // --- auto-decomposition: AI separates subjects/background into editable layers ---
+  // `imgRef` so the /load .then() (an older render's closure) still sees the loaded image.
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  imgRef.current = img;
   const runDecompose = async (granularity: "simple" | "fine", id?: string) => {
     const useId = id ?? imageId;
-    if (!useId || !img) return;
+    const im = imgRef.current;
+    if (!useId || !im) return;
     setDecomposing(true);
     try {
       const r = await decompose(useId, granularity);
-      const baseUrl = imgToDataUrl(img);
+      const baseUrl = imgToDataUrl(im);
       const newLayers: DocLayer[] = r.regions.map((reg) => {
         const lid = newLayerId();
-        layerImgs.current.set(lid, img); // decomposed layers draw the base pixels, clipped to their mask
+        layerImgs.current.set(lid, im); // decomposed layers draw the base pixels, clipped to their mask
         return {
           id: lid,
           name: reg.name,
@@ -2014,6 +2068,7 @@ export function CanvasStage() {
 
   // panel ↔ canvas selection sync (click / shift-range / cmd-add)
   const selectLayerRow = (id: string, additive: boolean, range: boolean) => {
+    emitMilestone("layers");
     setActiveLayer(id);
     setTool("move");
     if (range && activeLayer) {
@@ -2039,6 +2094,7 @@ export function CanvasStage() {
   const updateLayer = (id: string, patch: Partial<DocLayer>) =>
     setLayers((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)));
   const toggleVisible = (id: string, alt = false) => {
+    emitMilestone("layers");
     pushHistory();
     if (alt) {
       // solo/isolate — show only this layer; alt-clicking again restores all
@@ -2053,6 +2109,7 @@ export function CanvasStage() {
     setImgVer((v) => v + 1);
   };
   const setLayerOpacity = (id: string, v: number) => {
+    emitMilestone("layers");
     updateLayer(id, { opacity: v });
     setImgVer((x) => x + 1);
   };
@@ -2062,6 +2119,7 @@ export function CanvasStage() {
     setImgVer((v) => v + 1);
   };
   const deleteLayer = (id: string) => {
+    emitMilestone("layers");
     pushHistory();
     setLayers((ls) => ls.filter((l) => l.id !== id));
     if (activeLayer === id) setActiveLayer(null);
@@ -2119,6 +2177,8 @@ export function CanvasStage() {
   };
   const saveProject = () => {
     if (!img) return;
+    emitMilestone("save");
+    fireTip("save-export");
     const json = serializeDoc(img.naturalWidth, img.naturalHeight, imgToDataUrl(img), layers, docTransform, groups);
     void saveFile(new Blob([json], { type: "application/json" }), "neuclip-project.neuclip");
   };
@@ -2316,6 +2376,12 @@ export function CanvasStage() {
         setSamPoints([]);
         setGenStatus("done");
         toastSuccess(`Edit complete — added layer "AI edit ${n}"`);
+        emitMilestone("generate");
+        fireTip("viewmodes");
+        if (n >= 2) {
+          emitMilestone("second-ai-edit");
+          fireTip("layer-stack");
+        }
       } else {
         setGenStatus("failed");
       }
@@ -2481,6 +2547,7 @@ export function CanvasStage() {
     setShootoutRun((cur) => (cur ? { ...cur, winner: tile.modelId } : cur));
     void recordExemplar(tile.modelId, s.intent, tile.prompt);
     toastSuccess(`Kept ${tile.label} — added as a layer and recorded as the winner.`);
+    emitMilestone("generate");
     if (mask) {
       setMask(new MaskBuffer(mask.width, mask.height));
       setSamPoints([]);
@@ -2626,6 +2693,7 @@ export function CanvasStage() {
       )}
       <div
         ref={wrapRef}
+        data-tour="canvas"
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}
         style={{ flex: 1, position: "relative", background: "#0a0c0f", minHeight: 0 }}
@@ -2961,7 +3029,10 @@ export function CanvasStage() {
 
       <GenerateBar
         prompt={prompt}
-        onPrompt={setPrompt}
+        onPrompt={(v) => {
+          setPrompt(v);
+          if (v.trim()) emitMilestone("prompt");
+        }}
         hasSelection={!!mask && !mask.isEmpty()}
         status={genStatus}
         canGenerate={!!imageId && !!mask && !mask.isEmpty() && genStatus !== "busy" && genStatus !== "polling"}

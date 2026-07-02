@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { COLOR_GENERATION } from "../constants";
-import { getModels, loadModels, modelById, type ModelRefCaps } from "../api/referenceModels";
+import { getModels, loadModels, modelById, modelsMeta, type ModelRefCaps } from "../api/referenceModels";
+import { emitMilestone } from "../state/milestones";
+import { fireTip } from "../ui/coachmarks";
 import {
   ReferenceBlock,
   defaultReferenceState,
@@ -21,9 +23,11 @@ export function InspectorPipeline() {
   const [compareMode, setCompareMode] = useState(false);
   const [modelId, setModelId] = useState(getModels()[0].id);
   const userPickedModel = useRef(false);
+  const [hasKey, setHasKey] = useState(true); // optimistic until /models answers
   useEffect(() => {
     loadModels().then((m) => {
       setModels([...m]);
+      setHasKey(modelsMeta().hasKey);
       // Default to the first confirmed-slug model — an unverified default would 404 the
       // user's first real-key generation. Don't override an explicit user choice.
       if (!userPickedModel.current) {
@@ -81,11 +85,19 @@ export function InspectorPipeline() {
     } else {
       publish(null);
     }
+    if (refState.file || refState.controlImage) {
+      emitMilestone("reference");
+      fireTip("reference-roles");
+    }
   }, [model, refState, attachedLoras]);
 
   // Publish compare mode + set so the Generate bar can run the shootout (M3).
   useEffect(() => {
     setGenConfig({ compareMode, compareSet: comparisonSet });
+    if (compareMode) {
+      emitMilestone("compare");
+      fireTip("compare");
+    }
   }, [compareMode, comparisonSet]);
 
   // Routing: make `toId` the active/primary model for a role it supports, carrying the
@@ -143,6 +155,45 @@ export function InspectorPipeline() {
           COMPARE
         </button>
       </div>
+
+      {/* deferred key setup (B4): convert at the moment of motivation, never up front */}
+      {!hasKey && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 11,
+            lineHeight: 1.45,
+            color: "#f2c078",
+            background: "#2a1e0b",
+            border: "1px solid #f2a33c55",
+            borderRadius: 6,
+            padding: "7px 9px",
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            You're in <b>preview mode</b>: edits are simulated. Add a WaveSpeed key to run{" "}
+            <b>{model.label}</b> for real.
+          </span>
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent("neuclip:open-settings"))}
+            style={{
+              border: "none",
+              background: COLOR_GENERATION,
+              color: "#1a160e",
+              borderRadius: 5,
+              padding: "4px 10px",
+              cursor: "pointer",
+              fontWeight: 700,
+              fontSize: 11,
+              whiteSpace: "nowrap",
+            }}
+          >
+            Add key
+          </button>
+        </div>
+      )}
 
       {compareMode ? (
         <ModelCompare set={comparisonSet} onChange={setComparisonSet} />

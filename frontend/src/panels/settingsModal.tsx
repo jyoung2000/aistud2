@@ -8,6 +8,8 @@ import {
   type SettingsStatus,
 } from "../api/settings";
 import { loadModels, modelsMeta } from "../api/referenceModels";
+import { setTipsDisabled, tipsDisabled } from "../ui/coachmarks";
+import { toastSuccess, toast } from "../ui/toast";
 
 const AMBER = COLOR_GENERATION;
 
@@ -56,6 +58,16 @@ export function SettingsModal({
       setWavespeed("");
       setAnthropic("");
       setMsg("Saved.");
+      // key just landed → refresh the model list and celebrate going live (B4)
+      if (updates.wavespeed_api_key) {
+        await loadModels(true);
+        const meta = modelsMeta();
+        if (meta.hasKey && !meta.dynamicError) {
+          toastSuccess(`Live — ${meta.dynamicCount} models available`);
+        } else if (meta.dynamicError) {
+          toast(`Key saved, but the model list didn't refresh: ${meta.dynamicError}`, "info");
+        }
+      }
     } catch (e) {
       setMsg(String((e as Error)?.message ?? e));
     } finally {
@@ -190,6 +202,7 @@ export function SettingsModal({
             >
               Show walkthrough
             </button>
+            <TipsToggle />
           </>
         )}
 
@@ -240,6 +253,28 @@ function KeyField({
           ? `set (${status.source}${status.hint ? `, ${status.hint}` : ""})`
           : "not set"}
       </span>
+    </label>
+  );
+}
+
+function TipsToggle() {
+  const [disabled, setDisabled] = useState(tipsDisabled());
+  return (
+    <label
+      style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 10, fontSize: 12, color: "#cbd5e1", cursor: "pointer" }}
+      title="One-time hints that appear the first time you use a feature"
+    >
+      <input
+        type="checkbox"
+        checked={!disabled}
+        onChange={(e) => {
+          const on = e.target.checked;
+          setDisabled(!on);
+          setTipsDisabled(!on);
+        }}
+        style={{ accentColor: "#38bdf8" }}
+      />
+      Show one-time tips
     </label>
   );
 }

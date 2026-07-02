@@ -1,7 +1,80 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AdjustSpec, AdjustType, BlendMode, Layer } from "../canvas/document";
+import { CHECKLIST_ITEMS, dismissChecklist, useChecklist } from "../state/milestones";
+import { FEATURE_INDEX } from "../ui/featureIndex";
+import { spotlight } from "../ui/spotlight";
+import { toastSuccess } from "../ui/toast";
 
 const COLLAPSE_KEY = "neuclip.layersPanel.collapsed";
+
+/** Getting-started checklist (B5) — dismissible card until 5/5; rows spotlight their
+ *  feature via the shared feature-finder mechanism. */
+function ChecklistCard() {
+  const cl = useChecklist();
+  const doneCount = CHECKLIST_ITEMS.filter((i) => cl.done[i.key]).length;
+  const complete = doneCount === CHECKLIST_ITEMS.length;
+
+  // auto-dismiss at 5/5 with a small toast (once)
+  useEffect(() => {
+    if (complete && !cl.dismissed) {
+      toastSuccess("You know the whole app 🎉");
+      dismissChecklist();
+    }
+  }, [complete, cl.dismissed]);
+
+  if (cl.dismissed || complete) return null;
+  return (
+    <div
+      style={{
+        margin: "0 8px 8px",
+        border: "1px solid #2b313c",
+        borderRadius: 8,
+        background: "#14171c",
+        padding: "8px 10px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", fontSize: 10.5, color: "#94a3b8", fontWeight: 700 }}>
+        GETTING STARTED · {doneCount}/{CHECKLIST_ITEMS.length}
+        <button
+          onClick={dismissChecklist}
+          title="Dismiss the checklist"
+          style={{ marginLeft: "auto", border: "none", background: "transparent", color: "#5c6473", cursor: "pointer", fontSize: 11, padding: 0 }}
+        >
+          ✕
+        </button>
+      </div>
+      {CHECKLIST_ITEMS.map((item) => {
+        const done = !!cl.done[item.key];
+        const feature = FEATURE_INDEX.find((f) => f.key === item.finderKey);
+        return (
+          <button
+            key={item.key}
+            onClick={() => feature && spotlight(feature.tourTarget, feature.name, feature.blurb, feature.shortcut)}
+            title="Click to see where this lives"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              border: "none",
+              background: "transparent",
+              color: done ? "#5c8a5c" : "#aab6c5",
+              fontSize: 11,
+              cursor: "pointer",
+              padding: "1px 0",
+              textAlign: "left",
+            }}
+          >
+            <span style={{ width: 12 }}>{done ? "✓" : "○"}</span>
+            <span style={{ textDecoration: done ? "line-through" : "none" }}>{item.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 const ADJUSTS: AdjustType[] = ["exposure", "contrast", "saturation", "temperature", "vibrance"];
 
@@ -124,6 +197,7 @@ export function LayersPanel({
 
   return (
     <aside
+      data-tour="layers"
       style={{
         width: 240,
         flex: "0 0 240px",
@@ -145,6 +219,8 @@ export function LayersPanel({
           ▶
         </button>
       </div>
+
+      <ChecklistCard />
 
       {selCount > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "0 8px 8px" }}>

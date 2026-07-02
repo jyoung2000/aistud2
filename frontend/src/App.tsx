@@ -6,6 +6,10 @@ import { InspectorPipeline } from "./panels/inspectorPipeline";
 import { SettingsModal } from "./panels/settingsModal";
 import { CanvasStage } from "./canvas/canvasStage";
 import { Toasts } from "./ui/toast";
+import { HelpMenu } from "./panels/help";
+import { Tutorial } from "./panels/tutorial";
+import { CoachMarks, fireTip } from "./ui/coachmarks";
+import { SpotlightHost } from "./ui/spotlight";
 
 // lazy — onboarding only matters on first run / on demand; keep it out of the main chunk.
 // The gate key is checked inline so the module isn't pulled in just to read localStorage.
@@ -25,6 +29,7 @@ export default function App() {
   const [state, setState] = useState<SidecarState>({ kind: "connecting" });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [onboardOpen, setOnboardOpen] = useState(false);
+  const [onboardMode, setOnboardMode] = useState<"welcome" | "tour">("welcome");
   const health = state.kind === "connected" ? state.health : null;
 
   useEffect(() => {
@@ -33,8 +38,15 @@ export default function App() {
       .then((health) => {
         if (!cancelled) {
           setState({ kind: "connected", health });
-          // First run: show the onboarding walkthrough once the sidecar is up.
-          if (!hasOnboarded()) setOnboardOpen(true);
+          // First run: the one-screen welcome → guided first edit (learn by doing).
+          if (!hasOnboarded()) {
+            setOnboardMode("welcome");
+            setOnboardOpen(true);
+          }
+          // CPU build on a machine with an idle NVIDIA GPU → one-time nudge (coach mark)
+          if (health.gpu_present && !health.cuda) {
+            window.setTimeout(() => fireTip("gpu-idle"), 4000);
+          }
         }
       })
       .catch((e) => {
@@ -44,6 +56,19 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  // deferred key setup (B4): the inspector banner asks to open Settings at the moment a
+  // key matters — decoupled via an event so panels don't need App plumbing.
+  useEffect(() => {
+    const openSettings = () => setSettingsOpen(true);
+    window.addEventListener("neuclip:open-settings", openSettings);
+    return () => window.removeEventListener("neuclip:open-settings", openSettings);
+  }, []);
+
+  const showTour = () => {
+    setOnboardMode("tour");
+    setOnboardOpen(true);
+  };
 
   return (
     <div
@@ -62,6 +87,7 @@ export default function App() {
           height: 40,
           display: "flex",
           alignItems: "center",
+          gap: 8,
           padding: "0 14px",
           borderBottom: "1px solid #262a31",
           fontWeight: 600,
@@ -69,23 +95,25 @@ export default function App() {
         }}
       >
         {APP_NAME}
-        <button
-          data-tour="settings"
-          onClick={() => setSettingsOpen(true)}
-          title="Settings (API keys, compute)"
-          style={{
-            marginLeft: "auto",
-            border: "1px solid #2a2f37",
-            background: "transparent",
-            color: "#cbd5e1",
-            borderRadius: 6,
-            padding: "4px 10px",
-            fontSize: 12,
-            cursor: "pointer",
-          }}
-        >
-          ⚙ Settings
-        </button>
+        <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8, fontWeight: 400 }}>
+          <HelpMenu onShowTour={showTour} />
+          <button
+            data-tour="settings"
+            onClick={() => setSettingsOpen(true)}
+            title="Settings — API keys, compute, model list"
+            style={{
+              border: "1px solid #2a2f37",
+              background: "transparent",
+              color: "#cbd5e1",
+              borderRadius: 6,
+              padding: "4px 10px",
+              fontSize: 12,
+              cursor: "pointer",
+            }}
+          >
+            ⚙ Settings
+          </button>
+        </span>
       </header>
 
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
@@ -95,6 +123,9 @@ export default function App() {
 
       <StatusBar state={state} />
       <Toasts />
+      <Tutorial onTour={showTour} />
+      <CoachMarks />
+      <SpotlightHost />
 
       <SettingsModal
         open={settingsOpen}
@@ -102,13 +133,18 @@ export default function App() {
         health={health}
         onShowWalkthrough={() => {
           setSettingsOpen(false);
-          setOnboardOpen(true);
+          showTour();
         }}
       />
 
       {onboardOpen && (
         <Suspense fallback={null}>
-          <Onboarding open={onboardOpen} onClose={() => setOnboardOpen(false)} health={health} />
+          <Onboarding
+            open={onboardOpen}
+            onClose={() => setOnboardOpen(false)}
+            health={health}
+            mode={onboardMode}
+          />
         </Suspense>
       )}
     </div>

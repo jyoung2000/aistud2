@@ -1,5 +1,6 @@
 import type { HealthResponse } from "../api/sidecar";
 import { COLOR_SELECTION } from "../constants";
+import { emitMilestone } from "../state/milestones";
 import { setViewState, useViewState, type ViewMode } from "../state/viewState";
 
 export type SidecarState =
@@ -75,7 +76,10 @@ export function StatusBar({ state }: { state: SidecarState }) {
               return (
                 <button
                   key={m.id}
-                  onClick={() => setViewState({ viewMode: m.id })}
+                  onClick={() => {
+                    setViewState({ viewMode: m.id });
+                    if (m.id !== "normal") emitMilestone("abview");
+                  }}
                   title={m.title}
                   style={{
                     background: active ? "#22d3ee22" : "#181c22",
@@ -135,6 +139,7 @@ export function StatusBar({ state }: { state: SidecarState }) {
         )}
         {badge && (
           <span
+            data-tour="devicebadge"
             style={{
               padding: "2px 8px",
               borderRadius: 4,

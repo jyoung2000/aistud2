@@ -1,8 +1,12 @@
+// First-run onboarding (redesign B1): ONE welcome screen → the Guided First Edit runs on
+// the real app (see panels/tutorial.tsx). The spotlight tour engine below is kept and
+// trimmed to 5 stops — it's the optional "show me the map" layer, reachable from the done
+// card, ? Help, and Settings. API-key setup is NOT here — it's deferred to the moment a
+// real model needs it (inspector banner, B4).
 import { useEffect, useLayoutEffect, useState } from "react";
 import { APP_NAME, COLOR_GENERATION, COLOR_SELECTION } from "../constants";
 import type { HealthResponse } from "../api/sidecar";
-import { getSettings, saveSettings, type SettingsStatus } from "../api/settings";
-import { loadModels, modelsMeta } from "../api/referenceModels";
+import { startTutorial } from "../state/tutorial";
 
 const AMBER = COLOR_GENERATION;
 const CYAN = COLOR_SELECTION;
@@ -28,61 +32,37 @@ type Rect = { top: number; left: number; width: number; height: number; bottom: 
 
 type Step = {
   key: string;
-  /** data-tour id of the real UI element to spotlight (omit for centered panels). */
-  target?: string;
-  color?: string;
+  target: string;
+  color: string;
   title: string;
   body: React.ReactNode;
-  /** Special centered content instead of a callout. */
-  panel?: "welcome" | "keys" | "done";
 };
 
-// The tour walks the real interface top-to-bottom, spotlighting each element as it explains it.
+// The interface tour, trimmed to 5 stops (the tutorial teaches the loop; this is the map).
 const STEPS: Step[] = [
-  { key: "welcome", panel: "welcome", title: "", body: null },
-  { key: "keys", panel: "keys", title: "", body: null },
-  {
-    key: "open",
-    target: "open",
-    color: CYAN,
-    title: "1 · Open an image here",
-    body: (
-      <>
-        Click <b>Open image</b> (top-left) to load a photo — or drop one on the canvas. On open, the
-        app <b>auto-separates</b> the picture into editable layers (people, background, objects). The
-        original is never modified.
-      </>
-    ),
-  },
   {
     key: "tools",
     target: "tools",
     color: CYAN,
-    title: "2 · Your tools live here",
+    title: "1 · The tool rail",
     body: (
-      <div style={{ display: "grid", gap: 5 }}>
-        <Tool icon="✥" name="Move (V)" desc="pick up & scale whole layers" />
-        <Tool icon="⬚" name="Select (M)" desc="smart AI select — click the subject" />
-        <Tool icon="◠" name="Lasso" desc="freehand / polygon / edge-snapping outline" />
-        <Tool icon="✎" name="Pen" desc="precise, editable curves" />
-        <Tool icon="✋" name="Hand" desc="pan around (or hold Space)" />
-        <div style={{ marginTop: 3, color: "#9aa4b2" }}>
-          Selections show as <span style={{ color: CYAN }}>cyan marching ants</span>. Hold{" "}
-          <b>Shift</b> to add to a selection, <b>Alt</b> to subtract.
-        </div>
-      </div>
+      <>
+        All tools live here — hover any for its name and shortcut. <b>Select (M)</b> is the
+        one to remember: click your subject and it's selected. Selections show as{" "}
+        <span style={{ color: CYAN }}>cyan marching ants</span>; Shift adds, Alt subtracts.
+      </>
     ),
   },
   {
-    key: "filebar",
-    target: "filebar",
-    color: "#8ab4f8",
-    title: "3 · File & canvas actions",
+    key: "optionsbar",
+    target: "optionsbar",
+    color: CYAN,
+    title: "2 · Tool options",
     body: (
       <>
-        Open/Save a <code>.neuclip</code> project, <b>+ Import image</b> to drop another photo in as
-        a movable layer, <b>⤵ Flatten for AI</b> to bake layers into the base, <b>Auto-separate</b>,
-        plus <b>Crop</b> / <b>Extend</b> and adjustment layers.
+        This bar always shows <b>only the active tool's options</b> — Select gets
+        “Select subject” and select-by-text, the Wand gets tolerance, the Brush gets size
+        and snap. Advanced options sit behind <b>⋯ More</b>.
       </>
     ),
   },
@@ -90,25 +70,24 @@ const STEPS: Step[] = [
     key: "inspector",
     target: "inspector",
     color: AMBER,
-    title: "4 · The AI panel (amber = AI)",
+    title: "3 · The AI panel (amber = AI)",
     body: (
       <>
-        Pick a <b>model</b>, attach a <b>reference image</b> (replace / match-pose / style), stack{" "}
-        <b>LoRAs</b>, or turn on <b>Compare</b> to run several models at once. Only the <b>crop of
-        your selection</b> is ever sent — the rest of the photo stays untouched.
+        Pick a <b>model</b>, attach a <b>reference image</b> (replace / match-pose / style),
+        stack <b>LoRAs</b>, or turn on <b>Compare</b> to run several models at once. Only
+        the crop of your selection is ever sent.
       </>
     ),
   },
   {
-    key: "generate",
-    target: "generate",
-    color: AMBER,
-    title: "5 · Describe it & Generate",
+    key: "filemenu",
+    target: "filemenu",
+    color: "#8ab4f8",
+    title: "4 · The File menu",
     body: (
       <>
-        Type what you want for the selected area, then hit <b>Generate</b>. The result composites
-        back through a soft edge and drops in as a <b>re-editable layer</b> — edit it, re-roll it, or
-        stack more edits. The readout shows which model + reference will run.
+        Open images, save <code>.neuclip</code> projects (every layer stays editable),
+        import extra images as layers, and export PNG/JPEG/WebP or a transparent cutout.
       </>
     ),
   },
@@ -116,15 +95,15 @@ const STEPS: Step[] = [
     key: "settings",
     target: "settings",
     color: "#cbd5e1",
-    title: "6 · Settings & this tour",
+    title: "5 · Settings",
     body: (
       <>
-        Your <b>API keys</b>, <b>GPU status</b>, the live model list, and a <b>Show walkthrough</b>{" "}
-        button to reopen this tour all live here.
+        API keys, GPU status, the live model list, and the tip switch live here. Press{" "}
+        <b>⌘K</b> anytime for the <b>Feature Finder</b> — type a feature and it shows you
+        where it is.
       </>
     ),
   },
-  { key: "done", panel: "done", title: "", body: null },
 ];
 
 const BUBBLE_W = 348;
@@ -132,23 +111,26 @@ const BUBBLE_W = 348;
 export function Onboarding({
   open,
   onClose,
-  health,
+  mode = "welcome",
 }: {
   open: boolean;
   onClose: () => void;
   health: HealthResponse | null;
+  /** "welcome" = first-run screen; "tour" = jump straight into the interface tour. */
+  mode?: "welcome" | "tour";
 }) {
-  const [step, setStep] = useState(0);
+  // step -1 = welcome screen; 0..N-1 = tour stops
+  const [step, setStep] = useState(mode === "tour" ? 0 : -1);
   const [rect, setRect] = useState<Rect | null>(null);
-  const s = STEPS[step];
+  const s = step >= 0 ? STEPS[step] : null;
 
   useEffect(() => {
-    if (open) setStep(0);
-  }, [open]);
+    if (open) setStep(mode === "tour" ? 0 : -1);
+  }, [open, mode]);
 
   // Measure the spotlighted element (and keep it in sync on resize/scroll/layout).
   useLayoutEffect(() => {
-    if (!open || !s.target) {
+    if (!open || !s) {
       setRect(null);
       return;
     }
@@ -168,20 +150,21 @@ export function Onboarding({
       window.removeEventListener("resize", on);
       window.removeEventListener("scroll", on, true);
     };
-  }, [open, step, s.target]);
+  }, [open, step, s]);
 
   // keyboard: →/Enter next, ← back, Esc skip
   useEffect(() => {
     if (!open) return;
     const h = (e: KeyboardEvent) => {
       if (e.key === "Escape") finish();
-      else if (e.key === "ArrowRight" || e.key === "Enter") setStep((x) => Math.min(x + 1, STEPS.length - 1));
-      else if (e.key === "ArrowLeft") setStep((x) => Math.max(x - 1, 0));
+      else if (step >= 0 && (e.key === "ArrowRight" || e.key === "Enter"))
+        setStep((x) => (x >= STEPS.length - 1 ? (finish(), x) : x + 1));
+      else if (step >= 0 && e.key === "ArrowLeft") setStep((x) => Math.max(0, x - 1));
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, step]);
 
   if (!open) return null;
 
@@ -189,10 +172,54 @@ export function Onboarding({
     markOnboarded();
     onClose();
   };
+  const startWith = (evt: "neuclip:open-sample" | "neuclip:open-image") => {
+    markOnboarded();
+    onClose();
+    window.dispatchEvent(new CustomEvent(evt));
+    startTutorial(); // the guided first edit takes over on the real app
+  };
+
+  // ---------- welcome (one screen, two buttons) ----------
+  if (step === -1) {
+    return (
+      <div style={{ position: "fixed", inset: 0, zIndex: 2000 }}>
+        <div style={{ position: "absolute", inset: 0, background: "rgba(4,8,14,0.85)" }} />
+        <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", padding: 16 }}>
+          <div style={{ ...centerCard, textAlign: "center", width: 480 }}>
+            <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 10 }}>{APP_NAME}</div>
+            <p style={{ color: "#aeb6c2", lineHeight: 1.55, fontSize: 14, margin: "0 0 22px" }}>
+              Select anything. Change only that.
+              <br />
+              Everything else stays pixel-perfect.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center" }}>
+              <button
+                onClick={() => startWith("neuclip:open-sample")}
+                style={{ ...primaryBtn, background: AMBER, fontSize: 14, padding: "11px 26px" }}
+              >
+                Start with the sample photo
+              </button>
+              <button onClick={() => startWith("neuclip:open-image")} style={{ ...ghostBtn, fontSize: 13 }}>
+                Open my own image
+              </button>
+            </div>
+            <button
+              onClick={finish}
+              style={{ position: "absolute", right: 18, bottom: 14, border: "none", background: "transparent", color: "#5c6473", fontSize: 12, cursor: "pointer" }}
+            >
+              Skip
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------- spotlight tour ----------
   const next = () => (step >= STEPS.length - 1 ? finish() : setStep(step + 1));
   const back = () => setStep(Math.max(0, step - 1));
-  const color = s.color ?? AMBER;
-  const spotlighting = !!s.target && !!rect;
+  const color = s!.color;
+  const spotlighting = !!rect;
 
   const nav = (
     <Nav step={step} total={STEPS.length} onBack={back} onNext={next} onSkip={finish} color={color} />
@@ -201,12 +228,9 @@ export function Onboarding({
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 2000 }}>
       <style>{PULSE_CSS}</style>
-
       {spotlighting ? (
         <>
-          {/* click-blocking backdrop (dimming itself comes from the spotlight's box-shadow) */}
           <div style={{ position: "absolute", inset: 0 }} onClick={(e) => e.stopPropagation()} />
-          {/* the spotlight cutout */}
           <div
             style={{
               position: "absolute",
@@ -223,22 +247,15 @@ export function Onboarding({
               transition: "top .18s, left .18s, width .18s, height .18s",
             }}
           />
-          <Callout rect={rect!} color={color} title={s.title} body={s.body} nav={nav} />
+          <Callout rect={rect!} color={color} title={s!.title} body={s!.body} nav={nav} />
         </>
       ) : (
         <>
           <div style={{ position: "absolute", inset: 0, background: "rgba(4,8,14,0.82)" }} />
           <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", padding: 16 }}>
             <div style={centerCard}>
-              {s.panel === "welcome" && <Welcome />}
-              {s.panel === "keys" && <KeysStep health={health} />}
-              {s.panel === "done" && <DoneCard />}
-              {!s.panel && (
-                <>
-                  <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8, color }}>{s.title}</div>
-                  <div style={{ color: "#c2cad6", lineHeight: 1.6 }}>{s.body}</div>
-                </>
-              )}
+              <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8, color }}>{s!.title}</div>
+              <div style={{ color: "#c2cad6", lineHeight: 1.6 }}>{s!.body}</div>
               <div style={{ marginTop: 18 }}>{nav}</div>
             </div>
           </div>
@@ -338,132 +355,8 @@ function Nav({
         </button>
       )}
       <button onClick={onNext} style={{ ...primaryBtn, background: color }}>
-        {last ? "Start editing" : step === 0 ? "Take the tour" : "Next"}
+        {last ? "Start editing" : "Next"}
       </button>
-    </div>
-  );
-}
-
-function Tool({ icon, name, desc }: { icon: string; name: string; desc: string }) {
-  return (
-    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-      <span style={{ width: 18, textAlign: "center", color: CYAN }}>{icon}</span>
-      <b style={{ color: "#e9ecf2", minWidth: 74 }}>{name}</b>
-      <span style={{ color: "#9aa4b2" }}>{desc}</span>
-    </div>
-  );
-}
-
-function Welcome() {
-  return (
-    <div>
-      <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>Welcome to {APP_NAME}</div>
-      <p style={{ color: "#aeb6c2", lineHeight: 1.55, fontSize: 13.5, margin: "0 0 14px" }}>
-        An AI-assisted image editor: select any element, refine the edge, and send <b>only that
-        selection</b> to an AI model to replace, restyle, or re-pose it — while the rest of the
-        picture stays untouched. This quick tour points out every part of the interface. ~1 minute.
-      </p>
-      <ul style={{ color: "#9aa4b2", lineHeight: 1.7, fontSize: 12.5, margin: 0, paddingLeft: 18 }}>
-        <li><span style={{ color: CYAN }}>Cyan</span> = selection · <span style={{ color: AMBER }}>amber</span> = AI generation.</li>
-        <li>Every edit is a re-editable layer — nothing is destructive.</li>
-      </ul>
-    </div>
-  );
-}
-
-function KeysStep({ health }: { health: HealthResponse | null }) {
-  const [status, setStatus] = useState<SettingsStatus | null>(null);
-  const [wavespeed, setWavespeed] = useState("");
-  const [anthropic, setAnthropic] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [test, setTest] = useState<string | null>(null);
-
-  useEffect(() => {
-    getSettings().then(setStatus).catch(() => {});
-  }, []);
-
-  const wsSet = !!status?.secrets?.wavespeed_api_key?.set;
-  const antSet = !!status?.secrets?.anthropic_api_key?.set;
-  const onGpu = !!health?.cuda && !!health?.gpu_name;
-
-  const saveAndTest = async () => {
-    const updates: Record<string, string> = {};
-    if (wavespeed.trim()) updates.wavespeed_api_key = wavespeed.trim();
-    if (anthropic.trim()) updates.anthropic_api_key = anthropic.trim();
-    setBusy(true);
-    setTest(null);
-    try {
-      if (Object.keys(updates).length) {
-        setStatus(await saveSettings(updates));
-        setWavespeed("");
-        setAnthropic("");
-      }
-      await loadModels(true);
-      const meta = modelsMeta();
-      if (!meta.hasKey) setTest("No WaveSpeed key yet — you can add it later in ⚙ Settings.");
-      else if (meta.dynamicError) setTest(`Couldn't reach WaveSpeed: ${meta.dynamicError}`);
-      else setTest(`Connected — ${meta.dynamicCount} live image models loaded.`);
-    } catch (e) {
-      setTest(String((e as Error)?.message ?? e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div>
-      <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>Enter your API keys</div>
-      <p style={{ color: "#9aa4b2", fontSize: 12.5, lineHeight: 1.5, margin: "0 0 14px" }}>
-        Stored locally on this machine, owner-readable only. A <b>WaveSpeed</b> key is needed to
-        generate; <b>Anthropic</b> improves prompt synthesis. You can skip and add them later.
-      </p>
-      <Field label="WaveSpeed API key" placeholder={wsSet ? "•••• set — leave blank to keep" : "wsk-…"} value={wavespeed} onChange={setWavespeed} set={wsSet} />
-      <Field label="Anthropic API key (optional)" placeholder={antSet ? "•••• set — leave blank to keep" : "sk-ant-…"} value={anthropic} onChange={setAnthropic} set={antSet} />
-      <button onClick={saveAndTest} disabled={busy} style={{ ...primaryBtn, background: AMBER, opacity: busy ? 0.6 : 1 }}>
-        {busy ? "Testing…" : "Save & test connection"}
-      </button>
-      {test && (
-        <p style={{ fontSize: 12, marginTop: 10, color: test.startsWith("Connected") ? "#34d399" : "#e0b060" }}>{test}</p>
-      )}
-      <p style={{ fontSize: 11, color: onGpu || !health?.gpu_present ? "#6b7280" : "#e0b060", marginTop: 12, lineHeight: 1.5 }}>
-        Compute: <b style={{ color: onGpu ? "#34d399" : "#cbd5e1" }}>{onGpu ? health?.gpu_name : "CPU"}</b>
-        {onGpu ? " — GPU ready." : health?.gpu_present ? " — NVIDIA GPU detected; use the GPU build to activate CUDA." : " — running on CPU."}
-      </p>
-    </div>
-  );
-}
-
-function Field({ label, placeholder, value, onChange, set }: { label: string; placeholder: string; value: string; onChange: (v: string) => void; set: boolean }) {
-  return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 12 }}>
-      <span style={{ fontSize: 12, color: "#cbd5e1" }}>
-        {label} {set && <span style={{ color: "#34d399", fontSize: 11 }}>✓ set</span>}
-      </span>
-      <input
-        type="password"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        autoComplete="off"
-        style={{ background: "#0d0f12", color: "#e2e8f0", border: "1px solid #2a2f37", borderRadius: 6, padding: "9px 10px", fontSize: 13 }}
-      />
-    </label>
-  );
-}
-
-function DoneCard() {
-  return (
-    <div>
-      <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>You're all set 🎉</div>
-      <p style={{ color: "#aeb6c2", lineHeight: 1.6, fontSize: 13.5, margin: "0 0 12px" }}>
-        The quick loop: <b style={{ color: CYAN }}>Open</b> → <b style={{ color: CYAN }}>Select</b>{" "}
-        the area → <b style={{ color: AMBER }}>describe</b> the edit → <b style={{ color: AMBER }}>Generate</b>.
-        Reopen this tour any time from <b>⚙ Settings ▸ Show walkthrough</b>.
-      </p>
-      <ul style={{ color: "#9aa4b2", lineHeight: 1.7, fontSize: 12.5, margin: 0, paddingLeft: 18 }}>
-        <li><span style={{ color: CYAN }}>Cyan</span> = selection · <span style={{ color: AMBER }}>amber</span> = AI generation.</li>
-        <li>Every edit is a re-editable layer — nothing is destructive.</li>
-      </ul>
     </div>
   );
 }
@@ -471,6 +364,7 @@ function DoneCard() {
 const PULSE_CSS = `@keyframes neu-pulse {0%,100%{outline-offset:0}50%{outline-offset:4px}}`;
 
 const centerCard: React.CSSProperties = {
+  position: "relative",
   width: 520,
   maxWidth: "94vw",
   maxHeight: "88vh",
