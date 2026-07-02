@@ -1,0 +1,1 @@
+:focus-visible{outline:1.5px solid #22d3ee;outline-offset:1px;border-radius:3px}[data-tour=generate] :focus-visible,[data-tour=inspector] :focus-visible{outline-color:#f2a33c}button:disabled{cursor:not-allowed!important;opacity:.4}input:disabled,select:disabled{cursor:not-allowed;opacity:.4}

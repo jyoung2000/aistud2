@@ -9,10 +9,12 @@ export function Menu({
   label,
   children,
   width = 230,
+  dataTour,
 }: {
   label: string;
   children: React.ReactNode;
   width?: number;
+  dataTour?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -36,6 +38,7 @@ export function Menu({
   return (
     <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
       <button
+        data-tour={dataTour}
         onClick={() => setOpen((o) => !o)}
         style={{
           background: open ? "#1d222a" : "#181c22",

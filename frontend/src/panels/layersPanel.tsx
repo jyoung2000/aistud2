@@ -91,7 +91,7 @@ export function LayersPanel({
           width: 28,
           flex: "0 0 28px",
           height: "100%",
-          borderRight: "1px solid #20242b",
+          borderLeft: "1px solid #20242b",
           background: "#0f1216",
           display: "flex",
           flexDirection: "column",
@@ -105,7 +105,7 @@ export function LayersPanel({
           title="Expand layers panel"
           style={{ border: "none", background: "transparent", color: "#94a3b8", cursor: "pointer", fontSize: 12 }}
         >
-          ▶
+          ◀
         </button>
         <span
           style={{
@@ -129,7 +129,7 @@ export function LayersPanel({
         flex: "0 0 240px",
         height: "100%",
         overflowY: "auto",
-        borderRight: "1px solid #20242b",
+        borderLeft: "1px solid #20242b",
         background: "#0f1216",
         display: "flex",
         flexDirection: "column",
@@ -142,7 +142,7 @@ export function LayersPanel({
           title="Collapse layers panel"
           style={{ marginLeft: "auto", border: "none", background: "transparent", color: "#94a3b8", cursor: "pointer", fontSize: 12, padding: 0 }}
         >
-          ◀
+          ▶
         </button>
       </div>
 

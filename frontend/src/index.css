@@ -1,0 +1,26 @@
+/* Global focus + disabled semantics (redesign A3).
+   Keyboard users get a visible ring on every interactive element; disabled controls read
+   uniformly as 40% + not-allowed (the tooltip explains WHY where it matters). */
+
+:focus-visible {
+  outline: 1.5px solid #22d3ee;
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+/* amber ring inside AI-side surfaces so the color language holds */
+[data-tour="generate"] :focus-visible,
+[data-tour="inspector"] :focus-visible {
+  outline-color: #f2a33c;
+}
+
+button:disabled {
+  cursor: not-allowed !important;
+  opacity: 0.4;
+}
+
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}

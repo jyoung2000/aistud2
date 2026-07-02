@@ -68,6 +68,8 @@ import { getGenConfig, useGenConfig } from "../state/genConfig";
 import { toastError, toastSuccess, toast } from "../ui/toast";
 import { setViewState, useViewState } from "../state/viewState";
 import { Menu, MenuItem, MenuRow, MenuDivider } from "../ui/menu";
+import { HUE, NEUTRAL, RADII, TYPE, btn, field, divider } from "../ui/tokens";
+import { Tip } from "../ui/tooltip";
 import { LayersPanel } from "../panels/layersPanel";
 
 type Tool = "select" | "lasso" | "pen" | "wand" | "magic-brush" | "move" | "hand";
@@ -329,6 +331,7 @@ export function CanvasStage() {
 
   // gesture refs (avoid re-renders mid-drag)
   const drag = useRef<{ start: Pt; startT: ViewTransform; pan: boolean; moved: boolean; down: Pt } | null>(null);
+  const openInputRef = useRef<HTMLInputElement>(null); // ⌘O target
 
   // publish status values the StatusBar renders (view-mode switch, readouts, backend badge)
   useEffect(() => {
@@ -439,6 +442,11 @@ export function CanvasStage() {
       if (mod && (e.key === "s" || e.key === "S")) {
         e.preventDefault(); // Cmd/Ctrl+S — save .neuclip (don't trigger the browser save)
         saveProject();
+        return;
+      }
+      if (mod && (e.key === "o" || e.key === "O")) {
+        e.preventDefault(); // Cmd/Ctrl+O — open an image
+        openInputRef.current?.click();
         return;
       }
       if (mod && (e.key === "j" || e.key === "J")) {
@@ -2480,43 +2488,72 @@ export function CanvasStage() {
     setGenStatus("done");
   };
 
+  // cursor semantics: crosshair only for selection tools; move = arrow; pen = precise
+  // crosshair; brush hides the OS cursor (the ring is the cursor); hand/space = grab.
   const cursorStyle = !img
     ? "default"
     : panning
     ? "grabbing"
     : spaceHeld || tool === "hand"
     ? "grab"
+    : tool === "move"
+    ? "default"
+    : tool === "magic-brush"
+    ? "none"
     : "crosshair";
+
+  // sample image (bundled at /sample.jpg) — the zero-friction demo path
+  const openSample = async () => {
+    try {
+      const res = await fetch("/sample.jpg");
+      if (!res.ok) throw new Error(String(res.status));
+      const blob = await res.blob();
+      openFile(new File([blob], "sample.jpg", { type: "image/jpeg" }));
+    } catch (e) {
+      console.error("sample load failed:", e);
+      toastError("Couldn't load the sample image.");
+    }
+  };
+
+  // drop an image anywhere: opens it (or imports as a layer when one is already open)
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const f = e.dataTransfer.files?.[0];
+    if (!f) return;
+    if (f.name.endsWith(".neuclip")) void openProject(f);
+    else if (f.type.startsWith("image/")) img ? importImageAsLayer(f) : openFile(f);
+  };
 
   return (
     <div style={{ flex: 1, display: "flex", minWidth: 0 }}>
-      {img && (
-        <LayersPanel
-          layers={layers}
-          activeId={activeLayer}
-          selectedIds={selectedLayerIds}
-          thumbs={thumbs}
-          baseThumb={baseThumb}
-          onSelect={(id, additive, range) => selectLayerRow(id, additive, range)}
-          onToggleVisible={toggleVisible}
-          onOpacity={setLayerOpacity}
-          onBlend={setLayerBlend}
-          onDelete={deleteLayer}
-          onReorder={reorderLayer}
-          onEdit={editLayer}
-          onAdjust={setLayerAdjust}
-          onReroll={reroll}
-          onGroup={groupSelected}
-          onAlign={alignSelected}
-          onDuplicateSel={duplicateSelected}
-          onDeleteSel={deleteSelected}
-          onSelOpacity={setSelOpacity}
-          onFillBehind={fillBehindLayer}
-          onFlattenLayer={flattenLayer}
-        />
-      )}
+      <input
+        ref={openInputRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(e) => {
+          if (e.target.files?.[0]) openFile(e.target.files[0]);
+          e.currentTarget.value = "";
+        }}
+      />
+      <ToolRail
+        tool={tool}
+        onTool={setTool}
+        lassoMode={lassoMode}
+        onLassoMode={setLassoMode}
+        hasImage={!!img}
+        zoom={t.scale}
+        onIn={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1.25))}
+        onOut={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1 / 1.25))}
+        onFit={() => img && setT(fitTransform(img.naturalWidth, img.naturalHeight, vp.w, vp.h))}
+        onActual={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1 / c.scale))}
+      />
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
       <FileBar
+        canUndo={undoStack.current.length > 0}
+        canRedo={redoStack.current.length > 0}
+        onUndo={undo}
+        onRedo={redo}
         hasImage={!!img}
         onOpen={openFile}
         onSave={saveProject}
@@ -2538,63 +2575,25 @@ export function CanvasStage() {
         onExportCutout={exportCutout}
         canExportCutout={!!mask && !mask.isEmpty()}
       />
-      <ZoomBar
-        zoom={t.scale}
-        hasImage={!!img}
-        tool={tool}
-        onTool={setTool}
-        lassoMode={lassoMode}
-        onLassoMode={setLassoMode}
-        onInvert={invertMask}
-        busy={busy}
-        canRefine={!!mask && !mask.isEmpty()}
-        onRefine={runRefine}
-        onClearSel={() => {
-          if (mask && !mask.isEmpty()) {
-            pushHistory();
-            setMask(new MaskBuffer(mask.width, mask.height));
-          }
-          setSamPoints([]);
-        }}
-        canUndo={undoStack.current.length > 0}
-        canRedo={redoStack.current.length > 0}
-        onUndo={undo}
-        onRedo={redo}
-        onOpen={openFile}
-        onIn={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1.25))}
-        onOut={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1 / 1.25))}
-        onFit={() => img && setT(fitTransform(img.naturalWidth, img.naturalHeight, vp.w, vp.h))}
-        onActual={() => setT((c) => zoomAtPoint(c, { x: vp.w / 2, y: vp.h / 2 }, 1 / c.scale))}
-      />
-      {img && tool === "magic-brush" && (
-        <BrushBar
-          size={brushSize}
-          onSize={setBrushSize}
-          mode={brushMode}
-          onMode={setBrushMode}
-          snap={brushSnap}
-          onSnap={setBrushSnap}
-          refine={brushRefine}
-          onRefine={setBrushRefine}
-          hasPreview={!!brushPreview}
-          onCommit={() => void commitBrush()}
-          onClear={cancelBrush}
-        />
-      )}
       {img && (
-        <SelectBar
+        <OptionsBar
           tool={tool}
-          onWandTool={() => setTool("wand")}
           busy={busy}
+          canRefine={!!mask && !mask.isEmpty()}
+          onSubject={selectSubject}
+          onRefine={runRefine}
+          onInvert={invertMask}
+          onClearSel={() => {
+            if (mask && !mask.isEmpty()) {
+              pushHistory();
+              setMask(new MaskBuffer(mask.width, mask.height));
+            }
+            setSamPoints([]);
+          }}
           antialias={antialias}
           onAntialias={setAntialias}
           feather={feather}
           onFeather={setFeather}
-          onSubject={selectSubject}
-          wandTol={wandTol}
-          onWandTol={setWandTol}
-          wandContig={wandContig}
-          onWandContig={setWandContig}
           onGrow={() => modifySel((m) => m.grow(3))}
           onShrink={() => modifySel((m) => m.shrink(3))}
           onSmooth={() => modifySel((m) => m.smooth())}
@@ -2605,14 +2604,33 @@ export function CanvasStage() {
           named={namedSel.map((s) => s.name)}
           onLoadSel={loadSelection}
           note={selNote}
+          wandTol={wandTol}
+          onWandTol={setWandTol}
+          wandContig={wandContig}
+          onWandContig={setWandContig}
+          lassoMode={lassoMode}
+          onLassoMode={setLassoMode}
+          brushSize={brushSize}
+          onBrushSize={setBrushSize}
+          brushMode={brushMode}
+          onBrushMode={setBrushMode}
+          brushSnap={brushSnap}
+          onBrushSnap={setBrushSnap}
+          brushRefine={brushRefine}
+          onBrushRefine={setBrushRefine}
+          hasBrushPreview={!!brushPreview}
+          onBrushCommit={() => void commitBrush()}
+          onBrushClear={cancelBrush}
+          selectedLayerCount={selectedLayerIds.length}
         />
       )}
-      <div ref={wrapRef} style={{ flex: 1, position: "relative", background: "#0a0c0f", minHeight: 0 }}>
-        {!img && (
-          <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", color: "#3f4753" }}>
-            Open an image to begin
-          </div>
-        )}
+      <div
+        ref={wrapRef}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={onDrop}
+        style={{ flex: 1, position: "relative", background: "#0a0c0f", minHeight: 0 }}
+      >
+        {!img && <EmptyState onOpen={openFile} onSample={openSample} />}
         <Stage
           width={vp.w}
           height={vp.h}
@@ -2944,6 +2962,7 @@ export function CanvasStage() {
       <GenerateBar
         prompt={prompt}
         onPrompt={setPrompt}
+        hasSelection={!!mask && !mask.isEmpty()}
         status={genStatus}
         canGenerate={!!imageId && !!mask && !mask.isEmpty() && genStatus !== "busy" && genStatus !== "polling"}
         onGenerate={generateNow}
@@ -2967,6 +2986,33 @@ export function CanvasStage() {
         }}
       />
       </div>
+      {/* right-side story (redesign A2): Layers first, then the AI panel (App renders the
+          inspector immediately to our right) */}
+      {img && (
+        <LayersPanel
+          layers={layers}
+          activeId={activeLayer}
+          selectedIds={selectedLayerIds}
+          thumbs={thumbs}
+          baseThumb={baseThumb}
+          onSelect={(id, additive, range) => selectLayerRow(id, additive, range)}
+          onToggleVisible={toggleVisible}
+          onOpacity={setLayerOpacity}
+          onBlend={setLayerBlend}
+          onDelete={deleteLayer}
+          onReorder={reorderLayer}
+          onEdit={editLayer}
+          onAdjust={setLayerAdjust}
+          onReroll={reroll}
+          onGroup={groupSelected}
+          onAlign={alignSelected}
+          onDuplicateSel={duplicateSelected}
+          onDeleteSel={deleteSelected}
+          onSelOpacity={setSelOpacity}
+          onFillBehind={fillBehindLayer}
+          onFlattenLayer={flattenLayer}
+        />
+      )}
     </div>
   );
 }
@@ -2974,6 +3020,7 @@ export function CanvasStage() {
 function GenerateBar({
   prompt,
   onPrompt,
+  hasSelection,
   status,
   canGenerate,
   onGenerate,
@@ -2996,6 +3043,7 @@ function GenerateBar({
 }: {
   prompt: string;
   onPrompt: (v: string) => void;
+  hasSelection: boolean;
   status: "idle" | "busy" | "polling" | "done" | "failed";
   canGenerate: boolean;
   onGenerate: () => void;
@@ -3018,6 +3066,18 @@ function GenerateBar({
 }) {
   const A = COLOR_GENERATION;
   const cfg = useGenConfig();
+  // inline progress on the Generate button itself (spinner + elapsed seconds)
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (status !== "busy" && status !== "polling") {
+      setElapsed(0);
+      return;
+    }
+    const t0 = Date.now();
+    const iv = window.setInterval(() => setElapsed(Math.round((Date.now() - t0) / 1000)), 500);
+    return () => window.clearInterval(iv);
+  }, [status]);
+  const running = status === "busy" || status === "polling";
   const compare = cfg.compareMode && cfg.compareSet.length >= 2;
   const compareCost = cfg.compareSet.reduce(
     (s, id) => s + (modelById(id)?.estCostCents ?? 1),
@@ -3033,6 +3093,7 @@ function GenerateBar({
       : status === "failed"
       ? { c: "#ef4444", t: "failed" }
       : null;
+  const dimmed = !hasSelection && !shootout && variations.length === 0 && !running;
   return (
     <div
       data-tour="generate"
@@ -3043,8 +3104,26 @@ function GenerateBar({
         display: "flex",
         flexDirection: "column",
         gap: 8,
+        position: "relative",
       }}
     >
+      {dimmed && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "grid",
+            placeItems: "center",
+            zIndex: 2,
+            color: "#8a7f63",
+            fontSize: 12.5,
+            pointerEvents: "none",
+          }}
+        >
+          Select something to edit — click your subject with ⬚ Select (M)
+        </div>
+      )}
+      <div style={{ opacity: dimmed ? 0.35 : 1, display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ fontSize: 10.5, color: "#8a7f63", display: "flex", alignItems: "center", gap: 6, paddingLeft: 16 }}>
         <span>→ {cfg.modelLabel ?? "mock (no model selected)"}</span>
         {cfg.referenceRole && cfg.referencePng && (
@@ -3087,9 +3166,10 @@ function GenerateBar({
             background: "#0d0f12",
             color: "#e2e8f0",
             border: "1px solid #2a2f37",
+            borderLeft: `3px solid ${A}`,
             borderRadius: 6,
-            padding: "8px 10px",
-            fontSize: 13,
+            padding: "9px 10px",
+            fontSize: 13.5,
           }}
         />
         <button
@@ -3112,7 +3192,9 @@ function GenerateBar({
             whiteSpace: "nowrap",
           }}
         >
-          {compare
+          {running
+            ? `⟳ ${status === "polling" ? "polling" : "working"} · ${elapsed}s`
+            : compare
             ? `Run shootout (${cfg.compareSet.length} models · ~${compareCost.toFixed(1)}¢)`
             : "Generate"}
         </button>
@@ -3298,11 +3380,16 @@ function GenerateBar({
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }
 
 function FileBar({
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
   hasImage,
   onOpen,
   onSave,
@@ -3324,6 +3411,10 @@ function FileBar({
   onExportCutout,
   canExportCutout,
 }: {
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
   hasImage: boolean;
   onOpen: (f: File) => void;
   onSave: () => void;
@@ -3351,15 +3442,6 @@ function FileBar({
   const [finishFace, setFinishFace] = useState(false);
   const [exportFmt, setExportFmt] = useState<"png" | "jpeg" | "webp">("png");
   const [exportQuality, setExportQuality] = useState(0.92);
-  const btn: React.CSSProperties = {
-    background: "#181c22",
-    color: "#cbd5e1",
-    border: "1px solid #2a2f37",
-    borderRadius: 5,
-    padding: "3px 9px",
-    fontSize: 11.5,
-    cursor: "pointer",
-  };
   const ASPECTS: [string, number | null][] = [
     ["Free", null],
     ["1:1", 1],
@@ -3413,7 +3495,7 @@ function FileBar({
         }}
       />
 
-      <Menu label="File">
+      <Menu label="File" dataTour="filemenu">
         <MenuItem label="Open image…" onClick={() => openRef.current?.click()} />
         <MenuItem label="Open project (.neuclip)…" onClick={() => fileRef.current?.click()} />
         <MenuItem label="Save project (.neuclip)" hint="⌘S" disabled={!hasImage} onClick={onSave} />
@@ -3561,46 +3643,195 @@ function FileBar({
       >
         {decomposing ? "separating…" : "⛶ Auto-separate"}
       </button>
+      <span style={{ marginLeft: "auto", display: "inline-flex", gap: 6 }}>
+        <Tip name="Undo" keys="⌘Z" side="bottom">
+          <button style={{ ...btn, width: 28, padding: "3px 0", textAlign: "center" }} disabled={!canUndo} onClick={onUndo}>↶</button>
+        </Tip>
+        <Tip name="Redo" keys="⌘⇧Z" side="bottom">
+          <button style={{ ...btn, width: 28, padding: "3px 0", textAlign: "center" }} disabled={!canRedo} onClick={onRedo}>↷</button>
+        </Tip>
+      </span>
     </div>
   );
 }
 
-function SelectBar({
+// --- tools (redesign A2): vertical rail, icon-only, flyout for lasso modes -----------
+const TOOL_DEFS: { id: Tool; icon: string; name: string; desc: string; key: string }[] = [
+  { id: "move", icon: "✥", name: "Move", desc: "Move and transform layers; drag from empty space to select several", key: "V" },
+  { id: "select", icon: "⬚", name: "Select", desc: "Click your subject to select it; drag a box for a region", key: "M" },
+  { id: "lasso", icon: "◠", name: "Lasso", desc: "Draw a selection by hand — long-press for Freehand / Polygon / Magnetic", key: "L" },
+  { id: "pen", icon: "✎", name: "Pen", desc: "Click = corner, drag = curve, Alt-click toggles smooth, Enter commits", key: "P" },
+  { id: "wand", icon: "✦", name: "Magic Wand", desc: "Click to select similar colors", key: "Shift+W" },
+  { id: "magic-brush", icon: "🖌", name: "Magic Brush", desc: "Paint roughly — AI snaps it to the subject", key: "W" },
+  { id: "hand", icon: "✋", name: "Hand", desc: "Pan the view (or hold Space with any tool)", key: "H" },
+];
+
+const LASSO_MODES: { id: LassoMode; label: string; desc: string }[] = [
+  { id: "free", label: "Freehand", desc: "Draw the outline by dragging" },
+  { id: "poly", label: "Polygon", desc: "Click straight-line corners" },
+  { id: "magnetic", label: "Magnetic", desc: "Snaps to edges as you go" },
+];
+
+function ToolRail({
   tool,
-  onWandTool,
-  busy,
-  antialias,
-  onAntialias,
-  feather,
-  onFeather,
-  onSubject,
-  wandTol,
-  onWandTol,
-  wandContig,
-  onWandContig,
-  onGrow,
-  onShrink,
-  onSmooth,
-  semanticText,
-  onSemanticText,
-  onSemantic,
-  onSaveSel,
-  named,
-  onLoadSel,
-  note,
+  onTool,
+  lassoMode,
+  onLassoMode,
+  hasImage,
+  zoom,
+  onIn,
+  onOut,
+  onFit,
+  onActual,
 }: {
   tool: Tool;
-  onWandTool: () => void;
+  onTool: (t: Tool) => void;
+  lassoMode: LassoMode;
+  onLassoMode: (m: LassoMode) => void;
+  hasImage: boolean;
+  zoom: number;
+  onIn: () => void;
+  onOut: () => void;
+  onFit: () => void;
+  onActual: () => void;
+}) {
+  const [flyout, setFlyout] = useState(false);
+  const press = useRef(0);
+  const railBtn = (active: boolean): React.CSSProperties => ({
+    width: 32,
+    height: 30,
+    display: "grid",
+    placeItems: "center",
+    border: `1px solid ${active ? HUE.selection : "transparent"}`,
+    borderRadius: RADII.control,
+    background: active ? `${HUE.selection}22` : "transparent",
+    color: active ? HUE.selection : "#aeb9c9",
+    fontSize: 14,
+    cursor: "pointer",
+  });
+  return (
+    <div
+      data-tour="tools"
+      style={{
+        width: 44,
+        flex: "0 0 44px",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 3,
+        paddingTop: 8,
+        borderRight: `1px solid ${NEUTRAL.n5}`,
+        background: NEUTRAL.n1,
+        position: "relative",
+      }}
+    >
+      {TOOL_DEFS.map((d) => (
+        <span key={d.id} style={{ position: "relative" }}>
+          <Tip name={d.name} desc={d.desc} keys={d.key} side="right">
+            <button
+              style={railBtn(tool === d.id)}
+              onClick={() => {
+                onTool(d.id);
+                if (d.id !== "lasso") setFlyout(false);
+              }}
+              onContextMenu={(e) => {
+                if (d.id === "lasso") {
+                  e.preventDefault();
+                  onTool("lasso");
+                  setFlyout(true);
+                }
+              }}
+              onMouseDown={() => {
+                if (d.id === "lasso") {
+                  press.current = window.setTimeout(() => setFlyout(true), 450);
+                }
+              }}
+              onMouseUp={() => window.clearTimeout(press.current)}
+              onMouseLeave={() => window.clearTimeout(press.current)}
+            >
+              {d.icon}
+              {d.id === "lasso" && (
+                <span style={{ position: "absolute", right: 2, bottom: 0, fontSize: 7, color: "#5c6473" }}>◢</span>
+              )}
+            </button>
+          </Tip>
+          {d.id === "lasso" && flyout && (
+            <div
+              style={{
+                position: "absolute",
+                left: 40,
+                top: 0,
+                zIndex: 1200,
+                background: NEUTRAL.n3,
+                border: `1px solid ${NEUTRAL.n6}`,
+                borderRadius: RADII.card,
+                padding: 4,
+                display: "flex",
+                flexDirection: "column",
+                gap: 2,
+                boxShadow: "0 8px 24px #000a",
+                minWidth: 150,
+              }}
+              onMouseLeave={() => setFlyout(false)}
+            >
+              {LASSO_MODES.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => {
+                    onLassoMode(m.id);
+                    onTool("lasso");
+                    setFlyout(false);
+                  }}
+                  style={{
+                    textAlign: "left",
+                    border: "none",
+                    borderRadius: RADII.control,
+                    background: lassoMode === m.id ? `${HUE.selection}22` : "transparent",
+                    color: lassoMode === m.id ? HUE.selection : "#cbd5e1",
+                    padding: "5px 8px",
+                    fontSize: 11.5,
+                    cursor: "pointer",
+                  }}
+                >
+                  {m.label}
+                  <span style={{ display: "block", fontSize: 9.5, color: "#7d8694" }}>{m.desc}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </span>
+      ))}
+      <span style={{ width: 24, height: 1, background: NEUTRAL.n6, margin: "6px 0" }} />
+      <Tip name="Zoom in" keys="⌘ +" side="right">
+        <button style={railBtn(false)} disabled={!hasImage} onClick={onIn}>+</button>
+      </Tip>
+      <span style={{ fontSize: 9, color: "#7d8694" }}>{(zoom * 100).toFixed(0)}%</span>
+      <Tip name="Zoom out" keys="⌘ −" side="right">
+        <button style={railBtn(false)} disabled={!hasImage} onClick={onOut}>−</button>
+      </Tip>
+      <Tip name="Fit to window" keys="⌘ 0" side="right">
+        <button style={{ ...railBtn(false), fontSize: 11 }} disabled={!hasImage} onClick={onFit}>⤢</button>
+      </Tip>
+      <Tip name="Actual pixels" keys="⌘ 1" side="right">
+        <button style={{ ...railBtn(false), fontSize: 9 }} disabled={!hasImage} onClick={onActual}>1:1</button>
+      </Tip>
+    </div>
+  );
+}
+
+// --- contextual options bar (redesign A2): ONLY the active tool's options ------------
+function OptionsBar(props: {
+  tool: Tool;
   busy: boolean;
+  canRefine: boolean;
+  onSubject: () => void;
+  onRefine: () => void;
+  onInvert: () => void;
+  onClearSel: () => void;
   antialias: boolean;
   onAntialias: (v: boolean) => void;
   feather: number;
   onFeather: (v: number) => void;
-  onSubject: () => void;
-  wandTol: number;
-  onWandTol: (v: number) => void;
-  wandContig: boolean;
-  onWandContig: (v: boolean) => void;
   onGrow: () => void;
   onShrink: () => void;
   onSmooth: () => void;
@@ -3611,316 +3842,263 @@ function SelectBar({
   named: string[];
   onLoadSel: (idx: number) => void;
   note: string | null;
+  wandTol: number;
+  onWandTol: (v: number) => void;
+  wandContig: boolean;
+  onWandContig: (v: boolean) => void;
+  lassoMode: LassoMode;
+  onLassoMode: (m: LassoMode) => void;
+  brushSize: number;
+  onBrushSize: (v: number) => void;
+  brushMode: BrushMode;
+  onBrushMode: (m: BrushMode) => void;
+  brushSnap: BrushSnap;
+  onBrushSnap: (s: BrushSnap) => void;
+  brushRefine: boolean;
+  onBrushRefine: (v: boolean) => void;
+  hasBrushPreview: boolean;
+  onBrushCommit: () => void;
+  onBrushClear: () => void;
+  selectedLayerCount: number;
 }) {
-  const C = COLOR_SELECTION;
-  const btn: React.CSSProperties = {
-    background: "#141a1c",
-    color: "#a9c7cc",
-    border: "1px solid #233037",
-    borderRadius: 5,
-    padding: "3px 8px",
-    fontSize: 11,
-    cursor: "pointer",
+  const C = HUE.selection;
+  const [more, setMore] = useState(false);
+  const small: React.CSSProperties = { ...btn, padding: "3px 8px", fontSize: 11 };
+  const seg = (active: boolean): React.CSSProperties => ({
+    ...small,
+    background: active ? C : NEUTRAL.n4,
+    color: active ? "#08222b" : "#cbd5e1",
+    fontWeight: active ? 700 : 400,
+  });
+  const bar: React.CSSProperties = {
+    minHeight: 36,
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 7,
+    padding: "3px 10px",
+    borderBottom: `1px solid ${NEUTRAL.n5}`,
+    background: "#0c1113",
+    font: "11px ui-monospace, monospace",
+    color: "#7da3ab",
   };
-  return (
-    <div
-      style={{
-        minHeight: 30,
-        display: "flex",
-        flexWrap: "wrap",
-        alignItems: "center",
-        gap: 7,
-        padding: "4px 10px",
-        borderBottom: "1px solid #1a2226",
-        background: "#0c1113",
-        font: "11px ui-monospace, monospace",
-        color: "#7da3ab",
-      }}
-    >
-      <button style={btn} disabled={busy} onClick={onSubject} title="Select subject (one click)">
-        ⊙ Subject
-      </button>
-      <button
-        style={{ ...btn, borderColor: tool === "wand" ? C : "#233037", color: tool === "wand" ? C : "#a9c7cc" }}
-        onClick={onWandTool}
-        title="Magic wand — click to flood-select by color"
-      >
-        ✦ Wand
-      </button>
-      <span>tol</span>
-      <input type="range" min={0.01} max={0.6} step={0.01} value={wandTol} onChange={(e) => onWandTol(Number(e.target.value))} style={{ width: 70, accentColor: C }} />
-      <label style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer" }}>
-        <input type="checkbox" checked={wandContig} onChange={(e) => onWandContig(e.target.checked)} style={{ accentColor: C }} />
-        contiguous
-      </label>
-      <span style={{ width: 1, height: 16, background: "#233037" }} />
-      <button style={btn} onClick={onGrow} title="Grow selection 3px">Grow</button>
-      <button style={btn} onClick={onShrink} title="Shrink selection 3px">Shrink</button>
-      <button style={btn} onClick={onSmooth} title="Smooth selection edges">Smooth</button>
-      {/* shared selection-edge options — apply to every select tool's next commit */}
-      <label style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, cursor: "pointer" }} title="Anti-alias the selection edge (sub-pixel coverage)">
-        <input type="checkbox" checked={antialias} onChange={(e) => onAntialias(e.target.checked)} style={{ accentColor: C }} />
-        AA
-      </label>
-      <label style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10.5 }} title="Feather radius (px) — Gaussian softness of the selection edge">
+  const featherCtl = (
+    <Tip name="Feather" desc="Softens the selection edge — Gaussian blur of the selection channel, like Photoshop" side="bottom">
+      <label style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10.5 }}>
         feather
         <input
           type="number"
           min={0}
           max={1000}
-          value={feather}
-          onChange={(e) => onFeather(Math.max(0, Math.min(1000, Number(e.target.value) || 0)))}
-          style={{ width: 42, background: "#0d0f12", color: "#e2e8f0", border: "1px solid #233037", borderRadius: 5, padding: "2px 4px", fontSize: 11 }}
+          value={props.feather}
+          onChange={(e) => props.onFeather(Math.max(0, Math.min(1000, Number(e.target.value) || 0)))}
+          style={{ ...field, width: 42, padding: "2px 4px", fontSize: 11 }}
         />
       </label>
-      <span style={{ width: 1, height: 16, background: "#233037" }} />
-      <input
-        value={semanticText}
-        onChange={(e) => onSemanticText(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && onSemantic()}
-        placeholder="select by text (e.g. all people)"
-        style={{ width: 170, background: "#0d0f12", color: "#e2e8f0", border: "1px solid #233037", borderRadius: 5, padding: "3px 6px", fontSize: 11 }}
-      />
-      <button style={btn} disabled={busy} onClick={onSemantic}>Find</button>
-      <span style={{ width: 1, height: 16, background: "#233037" }} />
-      <button style={btn} onClick={onSaveSel} title="Save current selection">Save sel</button>
-      {named.length > 0 && (
-        <select
-          defaultValue=""
-          onChange={(e) => e.target.value !== "" && onLoadSel(Number(e.target.value))}
-          style={{ ...btn, padding: "2px 4px" }}
-        >
-          <option value="">load…</option>
-          {named.map((n, i) => (
-            <option key={i} value={i}>{n}</option>
-          ))}
-        </select>
-      )}
-      {note && <span style={{ color: "#eab308", fontSize: 10.5 }}>{note}</span>}
-    </div>
+    </Tip>
   );
-}
-
-function BrushBar({
-  size,
-  onSize,
-  mode,
-  onMode,
-  snap,
-  onSnap,
-  refine,
-  onRefine,
-  hasPreview,
-  onCommit,
-  onClear,
-}: {
-  size: number;
-  onSize: (v: number) => void;
-  mode: BrushMode;
-  onMode: (m: BrushMode) => void;
-  snap: BrushSnap;
-  onSnap: (s: BrushSnap) => void;
-  refine: boolean;
-  onRefine: (v: boolean) => void;
-  hasPreview: boolean;
-  onCommit: () => void;
-  onClear: () => void;
-}) {
-  const C = "#22d3ee";
-  const bar: React.CSSProperties = {
-    minHeight: 34, display: "flex", alignItems: "center", gap: 8, padding: "3px 10px",
-    borderBottom: "1px solid #20242b", background: "#0c1216", font: "11.5px ui-monospace, monospace", color: "#9fb4c4", flexWrap: "wrap",
-  };
-  const btn: React.CSSProperties = { background: "#12181d", color: "#cbd5e1", border: "1px solid #233037", borderRadius: 5, padding: "3px 8px", fontSize: 11, cursor: "pointer" };
-  const seg = (active: boolean): React.CSSProperties => ({ ...btn, background: active ? C : "#12181d", color: active ? "#08222b" : "#cbd5e1", fontWeight: active ? 700 : 400 });
-  return (
-    <div style={bar}>
-      <span style={{ color: C, fontWeight: 700 }}>🖌 Magic Brush</span>
-      <span style={{ width: 1, height: 16, background: "#233037" }} />
-      <span>Size</span>
-      <input type="range" min={1} max={300} value={Math.min(300, size)} onChange={(e) => onSize(Number(e.target.value))} style={{ width: 110, accentColor: C }} />
-      <input type="number" min={1} max={1000} value={size} onChange={(e) => onSize(Math.max(1, Math.min(1000, Number(e.target.value) || 1)))} style={{ width: 52, background: "#0d0f12", color: "#e2e8f0", border: "1px solid #233037", borderRadius: 5, padding: "2px 4px", fontSize: 11 }} />
-      <span style={{ color: "#5c6473" }}>[ ]</span>
-      <span style={{ width: 1, height: 16, background: "#233037" }} />
-      <button style={seg(mode === "brush")} onClick={() => onMode("brush")} title="Brush — add (paint the subject)">Brush +</button>
-      <button style={seg(mode === "eraser")} onClick={() => onMode("eraser")} title="Eraser — subtract (Alt does this temporarily)">Eraser −</button>
-      <span style={{ width: 1, height: 16, background: "#233037" }} />
-      <span>Snap</span>
-      {(["ai", "local", "off"] as BrushSnap[]).map((s) => (
-        <button key={s} style={seg(snap === s)} onClick={() => onSnap(s)} title={s === "ai" ? "AI (SAM 2) — snaps to the subject" : s === "local" ? "Local edge-grow (offline)" : "Off — raw paint"}>
-          {s === "ai" ? "AI" : s === "local" ? "Local" : "Off"}
-        </button>
-      ))}
-      <label style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer" }} title="Refine edges (BiRefNet) on commit">
-        <input type="checkbox" checked={refine} onChange={(e) => onRefine(e.target.checked)} style={{ accentColor: C }} />
-        Refine edges
-      </label>
-      <span style={{ width: 1, height: 16, background: "#233037" }} />
-      <button style={{ ...seg(false), color: hasPreview ? "#08222b" : "#5c6473", background: hasPreview ? C : "#12181d", fontWeight: 700 }} disabled={!hasPreview} onClick={onCommit} title="Commit selection (Enter)">Commit ⏎</button>
-      <button style={btn} disabled={!hasPreview} onClick={onClear} title="Clear hints + preview (Esc)">Clear</button>
-    </div>
-  );
-}
-
-const TOOL_DEFS: { id: Tool; icon: string; label: string; key: string }[] = [
-  { id: "move", icon: "✥", label: "Move / select layers", key: "V" },
-  { id: "select", icon: "⬚", label: "Smart select — click subject, drag box", key: "M" },
-  { id: "lasso", icon: "◠", label: "Lasso — Enter/double-click closes, Esc cancels", key: "Shift+L cycles mode" },
-  { id: "pen", icon: "✎", label: "Pen — click=corner, drag=curve, Alt-click toggles smooth", key: "Enter commits" },
-  { id: "wand", icon: "✦", label: "Magic wand — flood-select by color", key: "Shift+W" },
-  { id: "magic-brush", icon: "🖌", label: "Magic Brush — paint roughly, AI snaps to the subject", key: "W" },
-  { id: "hand", icon: "✋", label: "Hand — pan the view", key: "H, or hold Space" },
-];
-
-function ZoomBar({
-  zoom,
-  hasImage,
-  tool,
-  onTool,
-  lassoMode,
-  onLassoMode,
-  onInvert,
-  canUndo,
-  canRedo,
-  onUndo,
-  onRedo,
-  busy,
-  canRefine,
-  onRefine,
-  onClearSel,
-  onOpen,
-  onIn,
-  onOut,
-  onFit,
-  onActual,
-}: {
-  zoom: number;
-  hasImage: boolean;
-  tool: Tool;
-  onTool: (t: Tool) => void;
-  lassoMode: LassoMode;
-  onLassoMode: (m: LassoMode) => void;
-  onInvert: () => void;
-  canUndo: boolean;
-  canRedo: boolean;
-  onUndo: () => void;
-  onRedo: () => void;
-  busy: boolean;
-  canRefine: boolean;
-  onRefine: () => void;
-  onClearSel: () => void;
-  onOpen: (f: File) => void;
-  onIn: () => void;
-  onOut: () => void;
-  onFit: () => void;
-  onActual: () => void;
-}) {
-  const fileRef = useRef<HTMLInputElement>(null);
-  const btn: React.CSSProperties = {
-    background: "#181c22",
-    color: "#cbd5e1",
-    border: "1px solid #2a2f37",
-    borderRadius: 5,
-    padding: "4px 8px",
-    fontSize: 12,
-    cursor: "pointer",
-  };
-  // icon-only tool buttons (labels live in the tooltips) — the full set fits 1280×720
-  const toolBtn = (active: boolean): React.CSSProperties => ({
-    ...btn,
-    width: 30,
-    padding: "4px 0",
-    textAlign: "center",
-    background: active ? "#22d3ee22" : btn.background,
-    borderColor: active ? "#22d3ee" : "#2a2f37",
-    color: active ? "#22d3ee" : "#cbd5e1",
-  });
-  return (
-    <div
-      style={{
-        minHeight: 36,
-        display: "flex",
-        flexWrap: "wrap",
-        alignItems: "center",
-        gap: 6,
-        padding: "3px 10px",
-        borderBottom: "1px solid #20242b",
-        background: "#101317",
-        font: "12px ui-monospace, monospace",
-        color: "#94a3b8",
-      }}
+  const refineCtl = (
+    <Tip
+      name="Refine edge"
+      desc="Snaps the selection edge to fine detail (hair, fur)"
+      reason={!props.canRefine ? "Make a selection first — try clicking your subject with Select (M)" : undefined}
+      side="bottom"
     >
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        hidden
-        onChange={(e) => e.target.files?.[0] && onOpen(e.target.files[0])}
-      />
-      <button data-tour="open" style={btn} onClick={() => fileRef.current?.click()}>
-        Open image
+      <button style={small} disabled={!props.canRefine || props.busy} onClick={props.onRefine}>
+        ✦ Refine edge
       </button>
-      <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
-      <span data-tour="tools" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-        {TOOL_DEFS.map((d) => (
-          <button
-            key={d.id}
-            style={toolBtn(tool === d.id)}
-            onClick={() => onTool(d.id)}
-            title={`${d.label} (${d.key})`}
-          >
-            {d.icon}
+    </Tip>
+  );
+  const moreCtl = (
+    <>
+      <button style={{ ...small, color: more ? C : "#7da3ab" }} onClick={() => setMore((v) => !v)} title="More selection options">
+        ⋯ More
+      </button>
+      {more && (
+        <>
+          <label style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, cursor: "pointer" }} title="Anti-alias the selection edge (sub-pixel coverage)">
+            <input type="checkbox" checked={props.antialias} onChange={(e) => props.onAntialias(e.target.checked)} style={{ accentColor: C }} />
+            AA
+          </label>
+          <button style={small} disabled={!props.canRefine} onClick={props.onGrow} title="Grow selection 3px">Grow</button>
+          <button style={small} disabled={!props.canRefine} onClick={props.onShrink} title="Shrink selection 3px">Shrink</button>
+          <button style={small} disabled={!props.canRefine} onClick={props.onSmooth} title="Smooth selection edges">Smooth</button>
+          <button style={small} disabled={!props.canRefine} onClick={props.onInvert} title="Invert selection (⌘⇧I)">Invert</button>
+          <button style={small} disabled={!props.canRefine} onClick={props.onClearSel} title="Deselect (⌘D)">Deselect</button>
+          <button style={small} disabled={!props.canRefine} onClick={props.onSaveSel} title="Save current selection by name">Save sel</button>
+          {props.named.length > 0 && (
+            <select defaultValue="" onChange={(e) => e.target.value !== "" && props.onLoadSel(Number(e.target.value))} style={{ ...small, padding: "2px 4px" }}>
+              <option value="">load…</option>
+              {props.named.map((n, i) => (
+                <option key={i} value={i}>{n}</option>
+              ))}
+            </select>
+          )}
+        </>
+      )}
+    </>
+  );
+
+  let content: React.ReactNode = null;
+  if (props.tool === "select") {
+    content = (
+      <>
+        <Tip name="Select subject" desc="One click finds the main subject" side="bottom">
+          <button style={{ ...seg(false), borderColor: `${C}66`, color: C }} disabled={props.busy} onClick={props.onSubject}>
+            ⊙ Select subject
+          </button>
+        </Tip>
+        <input
+          value={props.semanticText}
+          onChange={(e) => props.onSemanticText(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && props.onSemantic()}
+          placeholder="select by text (e.g. all people)"
+          style={{ ...field, width: 180, padding: "3px 6px", fontSize: 11 }}
+        />
+        <button style={small} disabled={props.busy} onClick={props.onSemantic}>Find</button>
+        <span style={divider} />
+        {refineCtl}
+        {featherCtl}
+        {moreCtl}
+      </>
+    );
+  } else if (props.tool === "wand") {
+    content = (
+      <>
+        <Tip name="Tolerance" desc="How similar colors must be to join the selection" side="bottom">
+          <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            tolerance
+            <input type="range" min={0.01} max={0.6} step={0.01} value={props.wandTol} onChange={(e) => props.onWandTol(Number(e.target.value))} style={{ width: 90, accentColor: C }} />
+          </label>
+        </Tip>
+        <label style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer" }} title="Uncheck to grab matching colors everywhere in the image">
+          <input type="checkbox" checked={props.wandContig} onChange={(e) => props.onWandContig(e.target.checked)} style={{ accentColor: C }} />
+          contiguous
+        </label>
+        <span style={divider} />
+        {refineCtl}
+        {featherCtl}
+        {moreCtl}
+      </>
+    );
+  } else if (props.tool === "lasso") {
+    content = (
+      <>
+        {LASSO_MODES.map((m) => (
+          <button key={m.id} style={seg(props.lassoMode === m.id)} onClick={() => props.onLassoMode(m.id)} title={m.desc}>
+            {m.label}
           </button>
         ))}
-        {tool === "lasso" && (
-          <select
-            value={lassoMode}
-            onChange={(e) => onLassoMode(e.target.value as LassoMode)}
-            style={{ ...btn, padding: "3px 4px" }}
-            title="Lasso mode (Shift+L)"
-          >
-            <option value="free">Freehand</option>
-            <option value="poly">Polygonal</option>
-            <option value="magnetic">Magnetic</option>
-          </select>
-        )}
+        <span style={{ color: "#5c6473" }}>Enter/double-click closes · Esc cancels · Shift adds, Alt subtracts</span>
+        <span style={divider} />
+        {refineCtl}
+        {featherCtl}
+        {moreCtl}
+      </>
+    );
+  } else if (props.tool === "pen") {
+    content = (
+      <>
+        <span style={{ color: "#5c6473" }}>Click = corner · drag = curve · Alt-click toggles smooth · Enter commits</span>
+        <span style={divider} />
+        {featherCtl}
+        {moreCtl}
+      </>
+    );
+  } else if (props.tool === "magic-brush") {
+    content = (
+      <>
+        <span style={{ color: C, fontWeight: 700 }}>🖌 Magic Brush</span>
+        <span>Size</span>
+        <input type="range" min={1} max={300} value={Math.min(300, props.brushSize)} onChange={(e) => props.onBrushSize(Number(e.target.value))} style={{ width: 100, accentColor: C }} />
+        <input type="number" min={1} max={1000} value={props.brushSize} onChange={(e) => props.onBrushSize(Math.max(1, Math.min(1000, Number(e.target.value) || 1)))} style={{ ...field, width: 52, padding: "2px 4px", fontSize: 11 }} />
+        <span style={{ color: "#5c6473" }}>[ ]</span>
+        <button style={seg(props.brushMode === "brush")} onClick={() => props.onBrushMode("brush")} title="Brush — paint the subject">Brush +</button>
+        <button style={seg(props.brushMode === "eraser")} onClick={() => props.onBrushMode("eraser")} title="Eraser — subtract (Alt does this temporarily)">Eraser −</button>
+        <span>Snap</span>
+        {(["ai", "local", "off"] as BrushSnap[]).map((sv) => (
+          <button key={sv} style={seg(props.brushSnap === sv)} onClick={() => props.onBrushSnap(sv)} title={sv === "ai" ? "AI — snaps your scribble to the subject" : sv === "local" ? "Local edge-grow (works offline)" : "Off — raw paint"}>
+            {sv === "ai" ? "AI" : sv === "local" ? "Local" : "Off"}
+          </button>
+        ))}
+        <label style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer" }} title="Refine edges on commit">
+          <input type="checkbox" checked={props.brushRefine} onChange={(e) => props.onBrushRefine(e.target.checked)} style={{ accentColor: C }} />
+          Refine edges
+        </label>
+        <button
+          style={{ ...seg(false), color: props.hasBrushPreview ? "#08222b" : "#5c6473", background: props.hasBrushPreview ? C : NEUTRAL.n4, fontWeight: 700 }}
+          disabled={!props.hasBrushPreview}
+          onClick={props.onBrushCommit}
+          title="Commit selection (Enter)"
+        >
+          Commit ⏎
+        </button>
+        <button style={small} disabled={!props.hasBrushPreview} onClick={props.onBrushClear} title="Clear hints + preview (Esc)">Clear</button>
+      </>
+    );
+  } else if (props.tool === "move") {
+    content = (
+      <span style={{ color: "#5c6473" }}>
+        {props.selectedLayerCount
+          ? `${props.selectedLayerCount} layer${props.selectedLayerCount > 1 ? "s" : ""} selected — drag to move · corners scale · just outside a corner rotates (Shift snaps 15°)`
+          : "Click a layer to select it · drag from empty space to select several"}
       </span>
-      <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
-      <button
-        style={btn}
-        disabled={!canRefine || busy}
-        onClick={onRefine}
-        title="Refine the selection edge (BiRefNet / matting)"
-      >
-        ✦ Refine
-      </button>
-      <button style={{ ...btn, width: 30, padding: "4px 0" }} disabled={!canRefine} onClick={onInvert} title="Invert selection (Cmd/Ctrl+Shift+I)">
-        ◐
-      </button>
-      <button style={{ ...btn, width: 30, padding: "4px 0" }} disabled={!canRefine} onClick={onClearSel} title="Clear selection (Cmd/Ctrl+D)">
-        ✕
-      </button>
-      <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
-      <button style={{ ...btn, width: 30, padding: "4px 0" }} disabled={!canUndo} onClick={onUndo} title="Undo (Cmd/Ctrl+Z)">
-        ↶
-      </button>
-      <button style={{ ...btn, width: 30, padding: "4px 0" }} disabled={!canRedo} onClick={onRedo} title="Redo (Cmd/Ctrl+Shift+Z)">
-        ↷
-      </button>
-      <span style={{ width: 1, height: 18, background: "#2a2f37" }} />
-      <button style={{ ...btn, width: 26, padding: "4px 0" }} disabled={!hasImage} onClick={onOut} title="Zoom out (Cmd/Ctrl −)">
-        −
-      </button>
-      <span style={{ width: 46, textAlign: "center", color: "#e2e8f0" }}>{(zoom * 100).toFixed(0)}%</span>
-      <button style={{ ...btn, width: 26, padding: "4px 0" }} disabled={!hasImage} onClick={onIn} title="Zoom in (Cmd/Ctrl +)">
-        +
-      </button>
-      <button style={btn} disabled={!hasImage} onClick={onFit} title="Fit image to window (Cmd/Ctrl+0)">
-        Fit
-      </button>
-      <button style={btn} disabled={!hasImage} onClick={onActual} title="Actual pixels (Cmd/Ctrl+1)">
-        100%
-      </button>
+    );
+  } else if (props.tool === "hand") {
+    content = <span style={{ color: "#5c6473" }}>Drag to pan — or hold Space with any tool</span>;
+  }
+
+  return (
+    <div data-tour="optionsbar" style={bar}>
+      {content}
+      {props.note && <span style={{ color: "#eab308", fontSize: 10.5 }}>{props.note}</span>}
     </div>
   );
 }
+
+// --- empty state (redesign A2): a drop-zone card that teaches --------------------------
+function EmptyState({ onOpen, onSample }: { onOpen: (f: File) => void; onSample: () => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  return (
+    <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 14,
+          border: `1.5px dashed ${NEUTRAL.n6}`,
+          borderRadius: RADII.modal,
+          padding: "44px 64px",
+          background: "#0d101466",
+        }}
+      >
+        <span style={{ fontSize: 40, color: "#3f4753" }}>⤓</span>
+        <div style={{ fontSize: TYPE.title, color: NEUTRAL.n9, fontWeight: 600 }}>
+          Drop an image anywhere
+        </div>
+        <input
+          ref={ref}
+          type="file"
+          accept="image/*"
+          hidden
+          onChange={(e) => e.target.files?.[0] && onOpen(e.target.files[0])}
+        />
+        <button
+          data-tour="open"
+          onClick={() => ref.current?.click()}
+          style={{ ...btn, borderColor: HUE.file, color: HUE.file, padding: "7px 18px", fontSize: 13 }}
+        >
+          or Open image (⌘O)
+        </button>
+        <button
+          onClick={onSample}
+          style={{ background: "transparent", border: "none", color: "#7d8694", fontSize: 12, cursor: "pointer", textDecoration: "underline" }}
+        >
+          Try the sample image
+        </button>
+      </div>
+    </div>
+  );
+}
+
