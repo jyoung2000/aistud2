@@ -45,8 +45,11 @@ def crop_region(
 
 
 def feather_alpha(crop_mask: np.ndarray, radius: float = 2.5) -> np.ndarray:
-    """Soft 0..1 alpha from a binary crop mask (Gaussian feather of the edge)."""
-    a = (crop_mask > 0).astype(np.float32)
+    """Soft 0..1 alpha from a crop mask (Gaussian feather of the edge).
+
+    The incoming mask may already be SOFT (client-side anti-aliasing / feather) — treat it
+    as coverage, don't binarize, so a feathered selection survives the round trip."""
+    a = crop_mask.astype(np.float32) / 255.0
     if cv2 is not None and radius > 0:
         a = cv2.GaussianBlur(a, (0, 0), radius)
     return np.clip(a, 0.0, 1.0)
@@ -87,5 +90,8 @@ def mock_edit(crop_rgb: np.ndarray, prompt: str, seed: int = 0) -> np.ndarray:
     h = (((sum(ord(c) for c in prompt) if prompt else 0) + int(seed)) % 6)
     shift = np.array([[20, -10, -10], [ -10, 20, -10], [-10, -10, 20],
                       [20, 20, -20], [-20, 20, 20], [20, -20, 20]][h], np.float32)
-    out = np.clip(crop_rgb.astype(np.float32) + shift, 0, 255).astype(np.uint8)
+    # seed also scales magnitude (30 distinct looks) so shootout tiles with per-model
+    # seeds visibly differ even when the tint index collides mod 6.
+    mag = 1.0 + (((int(seed) * 2654435761) >> 7) % 5) * 0.35
+    out = np.clip(crop_rgb.astype(np.float32) + shift * mag, 0, 255).astype(np.uint8)
     return out

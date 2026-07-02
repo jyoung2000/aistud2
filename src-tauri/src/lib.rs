@@ -8,6 +8,10 @@ use sidecar::SidecarState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        // native save-dialog + file write — WebKitGTK ignores <a download>, so exports go
+        // through these plugins when running inside the Tauri shell (api/saveFile.ts)
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(SidecarState::default())
         .invoke_handler(tauri::generate_handler![sidecar::sidecar_port])
         .setup(|app| {

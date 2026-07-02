@@ -82,7 +82,7 @@ export function maskToPngDataUrl(mask: Uint8Array, width: number, height: number
   const ctx = c.getContext("2d")!;
   const id = ctx.createImageData(width, height);
   for (let i = 0; i < mask.length; i++) {
-    const v = mask[i] ? 255 : 0;
+    const v = mask[i]; // actual coverage — a feathered selection reaches the sidecar soft
     const o = i * 4;
     id.data[o] = id.data[o + 1] = id.data[o + 2] = v;
     id.data[o + 3] = 255;

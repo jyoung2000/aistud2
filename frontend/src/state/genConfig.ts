@@ -25,6 +25,9 @@ export interface GenConfig {
   /** The hand-edited pose skeleton, stored on the resulting layer for re-editing. */
   pose?: unknown;
   loras: GenLora[];
+  /** Compare mode (shootout M3): when on, Generate fans the edit across compareSet. */
+  compareMode: boolean;
+  compareSet: string[];
 }
 
 const DEFAULT: GenConfig = {
@@ -35,6 +38,8 @@ const DEFAULT: GenConfig = {
   controlStrength: 1,
   pose: undefined,
   loras: [],
+  compareMode: false,
+  compareSet: [],
 };
 
 let state: GenConfig = DEFAULT;
@@ -69,6 +74,8 @@ function shallowEqual(a: GenConfig, b: GenConfig): boolean {
     a.referencePng === b.referencePng &&
     a.controlStrength === b.controlStrength &&
     a.pose === b.pose &&
-    a.loras === b.loras
+    a.loras === b.loras &&
+    a.compareMode === b.compareMode &&
+    a.compareSet === b.compareSet
   );
 }

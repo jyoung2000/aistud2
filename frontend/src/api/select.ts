@@ -139,7 +139,7 @@ function maskToPng(mask: Uint8Array, width: number, height: number): string {
   const ctx = c.getContext("2d")!;
   const id = ctx.createImageData(width, height);
   for (let i = 0; i < mask.length; i++) {
-    const v = mask[i] ? 255 : 0;
+    const v = mask[i]; // preserve fractional coverage (AA / feather), don't binarize
     const o = i * 4;
     id.data[o] = id.data[o + 1] = id.data[o + 2] = v;
     id.data[o + 3] = 255;
@@ -158,7 +158,9 @@ async function pngToMask(b64: string, width: number, height: number): Promise<Ui
   ctx.drawImage(img, 0, 0, width, height);
   const data = ctx.getImageData(0, 0, width, height).data;
   const out = new Uint8Array(width * height);
-  for (let i = 0; i < out.length; i++) out[i] = data[i * 4] > 127 ? 255 : 0;
+  // raw coverage 0..255 — /refine returns SOFT alpha; thresholding here destroyed it.
+  // Marching ants trace the ≥128 contour, so visuals stay stable.
+  for (let i = 0; i < out.length; i++) out[i] = data[i * 4];
   return out;
 }
 

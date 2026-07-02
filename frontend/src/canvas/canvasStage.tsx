@@ -35,6 +35,7 @@ import {
   runToCompletion,
   maskToPngDataUrl,
   resultToImage,
+  type GenOpts,
   type HarmonizeOpts,
 } from "../api/generate";
 import { COLOR_GENERATION } from "../constants";
@@ -59,6 +60,9 @@ import {
   type AdjustSpec,
 } from "./document";
 import { b64ToFile, outpaint, finishImage, fillBehind } from "../api/generate";
+import { saveFile } from "../api/saveFile";
+import { runShootout, recordExemplar } from "../api/shootout";
+import { modelById } from "../api/referenceModels";
 import { getGenConfig, useGenConfig } from "../state/genConfig";
 import { setViewState, useViewState } from "../state/viewState";
 import { Menu, MenuItem, MenuRow, MenuDivider } from "../ui/menu";
@@ -75,13 +79,32 @@ interface ImgPx {
   h: number;
 }
 
-function downloadBlob(blob: Blob, name: string) {
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+// --- multi-model compare (shootout M3) ---
+export interface ShootoutTile {
+  modelId: string;
+  slug: string | null;
+  label: string;
+  prompt: string;
+  ruleNote: string;
+  seed: number;
+  status: "polling" | "done" | "failed";
+  url?: string;
+  latencyMs?: number;
+  error?: string;
+  jobId?: string | null;
 }
+
+export interface ShootoutState {
+  runId: string;
+  intent: string;
+  maskData: Uint8Array; // selection frozen at run time (fairness + Keep after deselect)
+  maskW: number;
+  maskH: number;
+  region: [number, number, number, number];
+  tiles: ShootoutTile[];
+  winner?: string;
+}
+
 
 function maskToCanvas(mask: MaskBuffer): HTMLCanvasElement {
   const c = document.createElement("canvas");
@@ -158,6 +181,7 @@ export function CanvasStage() {
   });
   const [variations, setVariations] = useState<{ seed: number; url: string }[]>([]);
   const [varK, setVarK] = useState(4);
+  const [shootoutRun, setShootoutRun] = useState<ShootoutState | null>(null);
 
   // layer document — `img` is the base (never replaced after open); edits become layers.
   const [layers, setLayers] = useState<DocLayer[]>([]);
@@ -662,13 +686,16 @@ export function CanvasStage() {
     const dataUrl = flat.toDataURL("image/png");
     setGenStatus("busy");
     try {
-      pushHistory();
+      // upload FIRST — only swap the local document once the sidecar has the new base, so
+      // a failed upload can never leave the frontend and sidecar images diverged.
+      const up = await loadImageToSidecar(await b64ToFile(dataUrl.split(",")[1]));
       const im = await new Promise<HTMLImageElement>((res, rej) => {
         const i = new window.Image();
         i.onload = () => res(i);
         i.onerror = rej;
         i.src = dataUrl;
       });
+      pushHistory();
       setImg(im);
       setLayers([]);
       layerImgs.current.clear();
@@ -683,14 +710,13 @@ export function CanvasStage() {
       tc.height = Math.max(1, Math.round(H * s));
       tc.getContext("2d")!.drawImage(im, 0, 0, tc.width, tc.height);
       setBaseThumb(tc.toDataURL("image/png"));
-      const up = await loadImageToSidecar(await b64ToFile(dataUrl.split(",")[1]));
       setImageId(up.id);
       setBackend(up.backend);
       setImgVer((v) => v + 1);
       setGenStatus("idle");
     } catch (e) {
       console.error("flatten failed:", e);
-      setGenStatus("failed");
+      setGenStatus("failed"); // state untouched — document and sidecar still agree
     }
   };
 
@@ -715,13 +741,15 @@ export function CanvasStage() {
     const dataUrl = flat.toDataURL("image/png");
     setGenStatus("busy");
     try {
-      pushHistory();
+      // upload FIRST (atomicity — see flattenForAI)
+      const up = await loadImageToSidecar(await b64ToFile(dataUrl.split(",")[1]));
       const im = await new Promise<HTMLImageElement>((res, rej) => {
         const i = new window.Image();
         i.onload = () => res(i);
         i.onerror = rej;
         i.src = dataUrl;
       });
+      pushHistory();
       setImg(im);
       for (const L of lower) layerImgs.current.delete(L.id); // baked-in ids no longer needed
       setLayers(upper); // upper layers keep their pixel caches (same ids, same W×H)
@@ -736,14 +764,13 @@ export function CanvasStage() {
       tc.height = Math.max(1, Math.round(H * s));
       tc.getContext("2d")!.drawImage(im, 0, 0, tc.width, tc.height);
       setBaseThumb(tc.toDataURL("image/png"));
-      const up = await loadImageToSidecar(await b64ToFile(dataUrl.split(",")[1]));
       setImageId(up.id);
       setBackend(up.backend);
       setImgVer((v) => v + 1);
       setGenStatus("idle");
     } catch (e) {
       console.error("flatten layer failed:", e);
-      setGenStatus("failed");
+      setGenStatus("failed"); // state untouched — document and sidecar still agree
     }
   };
 
@@ -1390,7 +1417,7 @@ export function CanvasStage() {
       cc.width = r.width;
       cc.height = r.height;
       cc.getContext("2d")!.drawImage(im, 0, 0);
-      cc.toBlob((b) => b && downloadBlob(b, `neuclip-${scale}x.png`), "image/png");
+      cc.toBlob((b) => b && void saveFile(b, `neuclip-${scale}x.png`), "image/png");
       setGenStatus("done");
     } catch (e) {
       console.error("finish failed:", e);
@@ -1402,7 +1429,7 @@ export function CanvasStage() {
   const exportPng = () => {
     const c = exportCanvas();
     if (!c) return;
-    c.toBlob((b) => b && downloadBlob(b, "neuclip-export.png"), "image/png");
+    c.toBlob((b) => b && void saveFile(b, "neuclip-export.png"), "image/png");
   };
   const exportCutout = () => {
     if (!img || !mask || mask.isEmpty() || !composite) return;
@@ -1416,7 +1443,7 @@ export function CanvasStage() {
     const id = ctx.getImageData(0, 0, w, h);
     for (let i = 0; i < mask.data.length; i++) id.data[i * 4 + 3] = mask.data[i] ? 255 : 0;
     ctx.putImageData(id, 0, 0);
-    c.toBlob((b) => b && downloadBlob(b, "neuclip-cutout.png"), "image/png");
+    c.toBlob((b) => b && void saveFile(b, "neuclip-cutout.png"), "image/png");
   };
 
   // --- auto-decomposition: AI separates subjects/background into editable layers ---
@@ -1455,6 +1482,29 @@ export function CanvasStage() {
     }
   };
 
+  // Generation options derived from the shared inspector config (model + reference/pose +
+  // LoRAs) — used identically by Generate, Vary ×K, and re-roll so they all hit the real
+  // model when one is configured (mock only when none is).
+  const genOptsFromConfig = (seed: number): GenOpts => {
+    const cfg = getGenConfig();
+    const params: Record<string, unknown> = {};
+    if (cfg.referenceRole === "pose" || cfg.referenceRole === "style") {
+      params.control_strength = cfg.controlStrength;
+    }
+    return {
+      mock: !cfg.modelId,
+      model_slug: cfg.modelId ?? undefined,
+      reference_png: cfg.referencePng ?? undefined,
+      reference_role: cfg.referenceRole ?? undefined,
+      params,
+      loras: cfg.loras.length ? cfg.loras : undefined,
+      harmonize,
+      seed,
+      // the shared selection feather reaches the sidecar's alpha (soft mask survives)
+      feather: feather > 0 ? feather : 2.5,
+    };
+  };
+
   // --- iterate: re-roll a layer in place, seed variations into a tray ---
   const reroll = async (id: string) => {
     const L = layers.find((l) => l.id === id);
@@ -1463,10 +1513,21 @@ export function CanvasStage() {
     pushHistory();
     setGenStatus("busy");
     try {
+      // reuse the layer's stored source (model, prompt, params, reference presence) and
+      // bump the seed; the current reference image rides along when the source had one.
+      const cfg = getGenConfig();
       const seed = (L.source.seed || 0) + 1;
+      const wasMock = !L.source.model || L.source.model === "mock";
       const job = await generate(imageId, maskPng, L.source.prompt, {
-        mock: true,
+        mock: wasMock,
+        model_slug: wasMock ? undefined : L.source.model,
+        params: L.source.params,
+        reference_png:
+          L.source.reference?.present && cfg.referencePng ? cfg.referencePng : undefined,
+        reference_role: L.source.reference?.present ? L.source.reference.role : undefined,
+        loras: cfg.loras.length ? cfg.loras : undefined,
         harmonize: L.harmonize ?? harmonize,
+        feather: feather > 0 ? feather : 2.5,
         seed,
       });
       const done = await runToCompletion(job);
@@ -1493,7 +1554,8 @@ export function CanvasStage() {
     try {
       const out: { seed: number; url: string }[] = [];
       for (let i = 1; i <= varK; i++) {
-        const job = await generate(imageId, maskPng, prompt, { mock: true, harmonize, seed: i });
+        // real model + reference + LoRAs via the shared config; mock only when no model
+        const job = await generate(imageId, maskPng, prompt, genOptsFromConfig(i));
         const done = await runToCompletion(job);
         if (done.status === "completed" && done.result_png)
           out.push({ seed: i, url: `data:image/png;base64,${done.result_png}` });
@@ -1857,7 +1919,7 @@ export function CanvasStage() {
   const saveProject = () => {
     if (!img) return;
     const json = serializeDoc(img.naturalWidth, img.naturalHeight, imgToDataUrl(img), layers, docTransform, groups);
-    downloadBlob(new Blob([json], { type: "application/json" }), "neuclip-project.neuclip");
+    void saveFile(new Blob([json], { type: "application/json" }), "neuclip-project.neuclip");
   };
   const openProject = async (file: File) => {
     const text = await file.text();
@@ -1910,6 +1972,8 @@ export function CanvasStage() {
     try {
       const r = await outpaint(imageId, { new_w: nw, new_h: nh, dx, dy, prompt, mock: true });
       if (r.status === "completed" && r.image_png) {
+        // upload FIRST (atomicity — see flattenForAI), then swap the local base
+        const up = await loadImageToSidecar(await b64ToFile(r.image_png));
         const im = await resultToImage(r.image_png);
         setImg(im); // extended image becomes the new base (outpaint resets the layer stack)
         setLayers([]);
@@ -1924,7 +1988,6 @@ export function CanvasStage() {
         tc.height = Math.max(1, Math.round(r.height * s));
         tc.getContext("2d")!.drawImage(im, 0, 0, tc.width, tc.height);
         setBaseThumb(tc.toDataURL("image/png"));
-        const up = await loadImageToSidecar(await b64ToFile(r.image_png));
         setImageId(up.id);
         setBackend(up.backend);
         setSamPoints([]);
@@ -1996,21 +2059,11 @@ export function CanvasStage() {
     const maskPng = maskToPngDataUrl(mask.data, mask.width, mask.height);
     setGenStatus("busy");
     try {
-      const params: Record<string, unknown> = {};
-      if (cfg.referenceRole === "pose" || cfg.referenceRole === "style") {
-        params.control_strength = cfg.controlStrength;
-      }
-      const job = await generate(imageId, maskPng, prompt, {
-        // No model selected → mock path; otherwise let the sidecar use the real model (it
-        // still falls back to mock when no WaveSpeed key is set).
-        mock: !cfg.modelId,
-        model_slug: cfg.modelId ?? undefined,
-        reference_png: cfg.referencePng ?? undefined,
-        reference_role: cfg.referenceRole ?? undefined,
-        params,
-        loras: cfg.loras.length ? cfg.loras : undefined,
-        harmonize,
-      });
+      // No model selected → mock path; otherwise the real model (the sidecar still falls
+      // back to mock when no WaveSpeed key is set).
+      const opts = genOptsFromConfig(0);
+      const params = opts.params ?? {};
+      const job = await generate(imageId, maskPng, prompt, opts);
       const done = await runToCompletion(job, (s) =>
         setGenStatus(s === "polling" ? "polling" : "busy")
       );
@@ -2058,6 +2111,166 @@ export function CanvasStage() {
       console.error("generate failed:", e);
       setGenStatus("failed");
     }
+  };
+
+  // --- multi-model compare (shootout M3): fan the edit across the compare set ---
+  const updateTile = (modelId: string, patch: Partial<ShootoutTile>) =>
+    setShootoutRun((s) =>
+      s ? { ...s, tiles: s.tiles.map((t) => (t.modelId === modelId ? { ...t, ...patch } : t)) } : s
+    );
+
+  const pollTile = (modelId: string, jobId: string, region: number[], t0: number) => {
+    runToCompletion({
+      job_id: jobId,
+      status: "polling",
+      mode: "wavespeed",
+      region,
+      result_png: null,
+      error: null,
+    })
+      .then((done) =>
+        updateTile(
+          modelId,
+          done.status === "completed" && done.result_png
+            ? {
+                status: "done",
+                url: `data:image/png;base64,${done.result_png}`,
+                latencyMs: Math.round(performance.now() - t0),
+              }
+            : { status: "failed", error: done.error ?? "generation failed" }
+        )
+      )
+      .catch((e) => updateTile(modelId, { status: "failed", error: String(e) }));
+  };
+
+  const shootoutBody = (models: string[], intent: string, maskPng: string) => {
+    const cfg = getGenConfig();
+    const params: Record<string, unknown> = {};
+    if (cfg.referenceRole === "pose" || cfg.referenceRole === "style") {
+      params.control_strength = cfg.controlStrength;
+    }
+    return {
+      id: imageId!,
+      mask_png: maskPng,
+      intent,
+      reference_png: cfg.referencePng ?? undefined,
+      reference_role: cfg.referenceRole ?? undefined,
+      models,
+      params,
+      loras: cfg.loras.length ? cfg.loras : undefined,
+      harmonize,
+    };
+  };
+
+  const runShootoutNow = async () => {
+    if (!imageId || !mask || mask.isEmpty()) return;
+    const cfg = getGenConfig();
+    if (cfg.compareSet.length < 2) return;
+    const maskPng = maskToPngDataUrl(mask.data, mask.width, mask.height);
+    const t0 = performance.now();
+    setGenStatus("busy");
+    try {
+      const res = await runShootout(shootoutBody(cfg.compareSet, prompt, maskPng));
+      const tiles: ShootoutTile[] = res.jobs.map((j) => ({
+        modelId: j.model_id,
+        slug: j.slug,
+        label: modelById(j.model_id)?.label ?? j.model_id,
+        prompt: j.prompt,
+        ruleNote: j.rule_note,
+        seed: j.seed,
+        status: j.status === "completed" ? "done" : j.status === "failed" ? "failed" : "polling",
+        url: j.result_png ? `data:image/png;base64,${j.result_png}` : undefined,
+        latencyMs: j.status === "completed" ? Math.round(performance.now() - t0) : undefined,
+        error: j.error ?? undefined,
+        jobId: j.job_id,
+      }));
+      setShootoutRun({
+        runId: res.run_id,
+        intent: prompt,
+        maskData: new Uint8Array(mask.data),
+        maskW: mask.width,
+        maskH: mask.height,
+        region: res.region,
+        tiles,
+      });
+      setGenStatus("idle");
+      // independent per-tile poll loops — one tile failing never blocks the rest
+      for (const tile of tiles) {
+        if (tile.status === "polling" && tile.jobId) pollTile(tile.modelId, tile.jobId, res.region, t0);
+      }
+    } catch (e) {
+      console.error("shootout failed:", e);
+      setGenStatus("failed");
+    }
+  };
+
+  const retryShootoutTile = async (modelId: string) => {
+    const s = shootoutRun;
+    if (!s || !imageId) return;
+    updateTile(modelId, { status: "polling", error: undefined });
+    const maskPng = maskToPngDataUrl(s.maskData, s.maskW, s.maskH);
+    const t0 = performance.now();
+    try {
+      const res = await runShootout(shootoutBody([modelId], s.intent, maskPng));
+      const j = res.jobs[0];
+      if (j.status === "completed" && j.result_png) {
+        updateTile(modelId, {
+          status: "done",
+          url: `data:image/png;base64,${j.result_png}`,
+          prompt: j.prompt,
+          latencyMs: Math.round(performance.now() - t0),
+        });
+      } else if (j.status === "polling" && j.job_id) {
+        updateTile(modelId, { prompt: j.prompt, jobId: j.job_id });
+        pollTile(modelId, j.job_id, res.region, t0);
+      } else {
+        updateTile(modelId, { status: "failed", error: j.error ?? "generation failed" });
+      }
+    } catch (e) {
+      updateTile(modelId, { status: "failed", error: String(e) });
+    }
+  };
+
+  // "Keep" a tile: composite it as an ai-edit layer (exactly like generateNow), record the
+  // winner, and feed (intent → winning prompt) back into the model's profile exemplars.
+  const keepShootoutTile = async (tile: ShootoutTile) => {
+    const s = shootoutRun;
+    if (!s || !img || !tile.url) return;
+    const im = await resultToImage(tile.url);
+    const id = newLayerId();
+    layerImgs.current.set(id, im);
+    pushHistory();
+    const n = layers.filter((l) => l.kind === "ai-edit").length + 1;
+    const layer: DocLayer = {
+      id,
+      name: `AI edit ${n} · ${tile.label}`,
+      visible: true,
+      opacity: 1,
+      blendMode: "normal",
+      kind: "ai-edit",
+      mask: new Uint8Array(s.maskData),
+      resultUrl: tile.url,
+      source: {
+        model: tile.slug ?? tile.modelId,
+        prompt: tile.prompt,
+        seed: tile.seed,
+        params: {},
+        sendRegion: s.region,
+      },
+      harmonize: { ...harmonize },
+      bounds: boundsFromMask(s.maskData, s.maskW, s.maskH) ?? undefined,
+      transform: { ...IDENTITY_TRANSFORM },
+    };
+    setLayers((ls) => [...ls, layer]);
+    setActiveLayer(id);
+    setImgVer((v) => v + 1);
+    setShootoutRun((cur) => (cur ? { ...cur, winner: tile.modelId } : cur));
+    void recordExemplar(tile.modelId, s.intent, tile.prompt);
+    if (mask) {
+      setMask(new MaskBuffer(mask.width, mask.height));
+      setSamPoints([]);
+    }
+    setGenStatus("done");
   };
 
   const cursorStyle = !img
@@ -2422,6 +2635,11 @@ export function CanvasStage() {
         status={genStatus}
         canGenerate={!!imageId && !!mask && !mask.isEmpty() && genStatus !== "busy" && genStatus !== "polling"}
         onGenerate={generateNow}
+        onShootout={runShootoutNow}
+        shootout={shootoutRun}
+        onKeepTile={keepShootoutTile}
+        onRetryTile={retryShootoutTile}
+        onDismissShootout={() => setShootoutRun(null)}
         overlapsImport={selectionOverlapsImport}
         onFlatten={flattenForAI}
         harmonize={harmonize}
@@ -2447,6 +2665,11 @@ function GenerateBar({
   status,
   canGenerate,
   onGenerate,
+  onShootout,
+  shootout,
+  onKeepTile,
+  onRetryTile,
+  onDismissShootout,
   overlapsImport,
   onFlatten,
   harmonize,
@@ -2464,6 +2687,11 @@ function GenerateBar({
   status: "idle" | "busy" | "polling" | "done" | "failed";
   canGenerate: boolean;
   onGenerate: () => void;
+  onShootout: () => void;
+  shootout: ShootoutState | null;
+  onKeepTile: (t: ShootoutTile) => void;
+  onRetryTile: (id: string) => void;
+  onDismissShootout: () => void;
   overlapsImport: boolean;
   onFlatten: () => void;
   harmonize: HarmonizeOpts;
@@ -2478,6 +2706,11 @@ function GenerateBar({
 }) {
   const A = COLOR_GENERATION;
   const cfg = useGenConfig();
+  const compare = cfg.compareMode && cfg.compareSet.length >= 2;
+  const compareCost = cfg.compareSet.reduce(
+    (s, id) => s + (modelById(id)?.estCostCents ?? 1),
+    0
+  );
   const chip =
     status === "polling"
       ? { c: "#eab308", t: "polling…" }
@@ -2548,8 +2781,13 @@ function GenerateBar({
           }}
         />
         <button
-          onClick={onGenerate}
+          onClick={compare ? onShootout : onGenerate}
           disabled={!canGenerate}
+          title={
+            compare
+              ? "Fan this edit out across the comparison set — one tuned prompt per model, everything else held identical"
+              : undefined
+          }
           style={{
             padding: "8px 16px",
             borderRadius: 6,
@@ -2559,9 +2797,12 @@ function GenerateBar({
             color: "#1a160e",
             background: A,
             opacity: canGenerate ? 1 : 0.5,
+            whiteSpace: "nowrap",
           }}
         >
-          Generate
+          {compare
+            ? `Run shootout (${cfg.compareSet.length} models · ~${compareCost.toFixed(1)}¢)`
+            : "Generate"}
         </button>
         <button
           onClick={onVary}
@@ -2583,6 +2824,115 @@ function GenerateBar({
           <span style={{ fontSize: 11, color: chip.c, minWidth: 56 }}>{chip.t}</span>
         )}
       </div>
+
+      {shootout && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            border: `1px solid ${A}44`,
+            borderRadius: 8,
+            padding: 8,
+            background: "#191509",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: A }}>
+            <b>Shootout</b>
+            <span style={{ color: "#8a7f63" }}>“{shootout.intent}”</span>
+            <span style={{ marginLeft: "auto", color: "#7d7252", fontSize: 10 }}>
+              seeds locked per model for re-runs; not comparable across models
+            </span>
+            <button
+              onClick={onDismissShootout}
+              title="Dismiss results"
+              style={{ border: "none", background: "transparent", color: "#8a7f63", cursor: "pointer", fontSize: 13 }}
+            >
+              ✕
+            </button>
+          </div>
+          <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2 }}>
+            {shootout.tiles.map((t) => (
+              <div
+                key={t.modelId}
+                style={{
+                  flex: "0 0 auto",
+                  width: 190,
+                  border: `1px solid ${shootout.winner === t.modelId ? A : "#3a3320"}`,
+                  borderRadius: 7,
+                  background: "#12100a",
+                  padding: 6,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 5,
+                }}
+              >
+                <div
+                  style={{
+                    height: 100,
+                    borderRadius: 5,
+                    background: "#0a0c0f",
+                    display: "grid",
+                    placeItems: "center",
+                    overflow: "hidden",
+                  }}
+                >
+                  {t.status === "done" && t.url ? (
+                    <img src={t.url} alt={t.label} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                  ) : t.status === "failed" ? (
+                    <span style={{ fontSize: 10, color: "#ef4444", padding: 6, textAlign: "center" }}>
+                      ✕ {t.error ?? "failed"}
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 10.5, color: "#eab308" }}>polling…</span>
+                  )}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5 }}>
+                  <b style={{ color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {t.label}
+                  </b>
+                  {t.latencyMs != null && (
+                    <span style={{ marginLeft: "auto", color: "#7d8694" }}>{(t.latencyMs / 1000).toFixed(1)}s</span>
+                  )}
+                </div>
+                <details style={{ fontSize: 9.5, color: "#9a8b6a" }}>
+                  <summary style={{ cursor: "pointer" }}>prompt</summary>
+                  <div style={{ whiteSpace: "pre-wrap", marginTop: 3 }}>{t.prompt}</div>
+                  {t.ruleNote && <div style={{ color: "#6b6248", marginTop: 3 }}>{t.ruleNote}</div>}
+                </details>
+                <div style={{ display: "flex", gap: 5 }}>
+                  {t.status === "done" && (
+                    <button
+                      onClick={() => onKeepTile(t)}
+                      style={{
+                        flex: 1,
+                        border: "none",
+                        background: shootout.winner === t.modelId ? "#22c55e" : A,
+                        color: "#1a160e",
+                        borderRadius: 5,
+                        padding: "4px 0",
+                        fontWeight: 700,
+                        fontSize: 11,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {shootout.winner === t.modelId ? "✓ Kept" : "Keep"}
+                    </button>
+                  )}
+                  {t.status === "failed" && (
+                    <button
+                      onClick={() => onRetryTile(t.modelId)}
+                      style={{ flex: 1, border: `1px solid ${A}`, background: "transparent", color: A, borderRadius: 5, padding: "4px 0", fontSize: 11, cursor: "pointer" }}
+                    >
+                      ↻ Retry
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {variations.length > 0 && (
         <div style={{ display: "flex", gap: 6, alignItems: "center", overflowX: "auto" }}>

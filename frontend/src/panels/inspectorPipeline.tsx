@@ -83,6 +83,11 @@ export function InspectorPipeline() {
     }
   }, [model, refState, attachedLoras]);
 
+  // Publish compare mode + set so the Generate bar can run the shootout (M3).
+  useEffect(() => {
+    setGenConfig({ compareMode, compareSet: comparisonSet });
+  }, [compareMode, comparisonSet]);
+
   // Routing: make `toId` the active/primary model for a role it supports, carrying the
   // reference image and the chosen role across the switch.
   const switchModel = (toId: string, role: string) => {

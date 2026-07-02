@@ -16,15 +16,35 @@ from typing import Dict, List, Tuple
 
 import yaml
 
+from app import settings as _settings
 from app.models import registry
 from app.profiles import builder
 
 HARD_MAX_TOKENS = 1024
 MAX_PROFILE_BYTES = 256_000
+MAX_EXEMPLARS = 20
 
 _DIR = Path(__file__).parent
-STORE_DIR = _DIR / "store"
+# Read-only legacy location inside the package (frozen builds bundle it); user profiles are
+# WRITTEN to the config dir, which survives upgrades and works in read-only installs.
+_BUNDLED_STORE = _DIR / "store"
 _SCHEMA_CACHE: dict | None = None
+
+
+def store_dir() -> Path:
+    """Writable user-profile dir: <config>/profiles (honors NEUCLIP_CONFIG_DIR)."""
+    return _settings.config_dir() / "profiles"
+
+
+def _user_path(model_id: str) -> Path:
+    """Path of a model's user layer: config dir first, bundled dir as read-only fallback."""
+    p = store_dir() / f"{model_id}.user.nprofile"
+    if p.exists():
+        return p
+    legacy = _BUNDLED_STORE / f"{model_id}.user.nprofile"
+    if legacy.exists():
+        return legacy
+    return p  # default (write target)
 
 
 def _schema() -> dict | None:
@@ -100,7 +120,7 @@ def _enforce_caps(profile: dict) -> Tuple[dict, List[str]]:
 def load(model_id: str) -> Tuple[dict, List[str]]:
     profile = base_profile(model_id)
     warnings: List[str] = []
-    user_path = STORE_DIR / f"{model_id}.user.nprofile"
+    user_path = _user_path(model_id)
     if user_path.exists():
         user = yaml.safe_load(user_path.read_text("utf-8")) or {}
         profile = _deep_merge(profile, user)
@@ -124,10 +144,34 @@ def import_profile(text: str, persist: bool = False) -> Tuple[dict, List[str]]:
     data, w2 = _enforce_caps(data)
     warnings += w2
     if persist and model_id:
-        STORE_DIR.mkdir(parents=True, exist_ok=True)
+        store_dir().mkdir(parents=True, exist_ok=True)
         data["layer"] = "user"
-        (STORE_DIR / f"{model_id}.user.nprofile").write_text(yaml.safe_dump(data), "utf-8")
+        (store_dir() / f"{model_id}.user.nprofile").write_text(yaml.safe_dump(data), "utf-8")
     return data, warnings
+
+
+def append_exemplar(model_id: str, intent: str, prompt: str) -> dict:
+    """Append an (intent → winning prompt) pair to the model's user layer (shootout M5
+    feedback). Append-only, capped at MAX_EXEMPLARS (oldest dropped), persisted to the
+    config dir. The exemplars ride the untrusted user layer — synthesis treats them as
+    data only."""
+    if not registry.get(model_id):
+        raise KeyError(model_id)
+    path = store_dir() / f"{model_id}.user.nprofile"
+    data: dict = {}
+    src = _user_path(model_id)
+    if src.exists():
+        data = yaml.safe_load(src.read_text("utf-8")) or {}
+    ex = data.setdefault("exemplars", [])
+    if not isinstance(ex, list):
+        ex = data["exemplars"] = []
+    ex.append({"intent": str(intent)[:500], "prompt": str(prompt)[:2000]})
+    del ex[:-MAX_EXEMPLARS]
+    data["layer"] = "user"
+    data.setdefault("model", model_id)
+    store_dir().mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(data), "utf-8")
+    return {"model": model_id, "exemplars": len(ex)}
 
 
 def list_profiles() -> List[dict]:
@@ -139,7 +183,7 @@ def list_profiles() -> List[dict]:
                 "model": spec.id,
                 "paradigm": prof["paradigm"],
                 "max_prompt_tokens": prof["constraints"]["max_prompt_tokens"],
-                "has_user_layer": (STORE_DIR / f"{spec.id}.user.nprofile").exists(),
+                "has_user_layer": _user_path(spec.id).exists(),
             }
         )
     return out

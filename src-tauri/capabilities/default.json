@@ -6,6 +6,12 @@
   "permissions": [
     "core:default",
     "shell:allow-execute",
-    "shell:allow-spawn"
+    "shell:allow-spawn",
+    "dialog:allow-save",
+    "fs:allow-write-file",
+    {
+      "identifier": "fs:scope",
+      "allow": ["$HOME/**", "$DOWNLOAD/**", "$DOCUMENT/**", "$DESKTOP/**", "$PICTURE/**"]
+    }
   ]
 }

@@ -587,6 +587,152 @@ def poll_generation(body: PollIn) -> dict:
     return payload
 
 
+class ShootoutIn(BaseModel):
+    id: str
+    mask_png: str
+    intent: str = ""
+    subject: Optional[str] = None
+    reference_png: Optional[str] = None
+    reference_role: Optional[str] = None
+    models: list[str] = []
+    params: dict = {}
+    loras: list[dict] = []
+    harmonize: Optional[dict] = None
+    mock: bool = False
+
+
+@app.post("/shootout")
+def shootout(body: ShootoutIn) -> dict:
+    """Multi-model compare (shootout M3): one edit fanned out across 2..N models.
+
+    Fairness contract — held identical across every model in the run: the selection mask,
+    the reference image + role, the intent text, and ONE shared send region computed as the
+    union of what each model needs (pose/controlnet models need the subject's full extent,
+    so the pad widens for the whole run). The ONLY variables are the model + its
+    independently synthesized tuned prompt. Partial failure of one job never blocks the
+    rest. Seeds are locked per model for re-runs — NOT comparable across architectures."""
+    import hashlib
+
+    try:
+        session = imaging.require_active(body.id)
+    except KeyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if not body.models:
+        raise HTTPException(status_code=400, detail="no models in the comparison set")
+    mask = imaging.base64_to_gray(body.mask_png)
+    if mask.shape[:2] != (session.height, session.width):
+        raise HTTPException(status_code=400, detail="mask size != image size")
+
+    # shared send region: widest need wins (pose/controlnet want the subject's full extent)
+    model_specs = [registry.get(m) for m in body.models]
+    needs_wide = body.reference_role == "pose" or any(
+        s is not None and s.paradigm == "controlnet" for s in model_specs
+    )
+    pad = 0.40 if needs_wide else 0.12
+    try:
+        crop, cmask, region = compose.crop_region(session.rgb, mask, pad)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="empty selection")
+    alpha = compose.feather_alpha(cmask, 2.5)
+
+    key = settings_store.get_secret("wavespeed_api_key")
+    reference_rgb = None
+    if body.reference_png:
+        import base64 as _b64
+
+        try:
+            reference_rgb = imaging.load_rgb(_b64.b64decode(body.reference_png.split(",")[-1]))
+        except Exception:
+            reference_rgb = None
+
+    out_jobs = []
+    for mid in body.models[:6]:  # MAX_COMPARE guard
+        # seed locked per model (stable hash of the model id) so re-runs reproduce
+        seed = int(hashlib.sha1(mid.encode()).hexdigest()[:8], 16) % 1_000_000
+        entry: dict = {
+            "model_id": mid,
+            "slug": None,
+            "prompt": "",
+            "rule_note": "",
+            "paradigm": "",
+            "seed": seed,
+            "status": "failed",
+            "job_id": None,
+            "result_png": None,
+            "error": None,
+        }
+        out_jobs.append(entry)
+        try:
+            # per-model tuned prompt via the profile system (dynamic catalog models have
+            # no profile — fall back to the raw intent, honestly annotated)
+            try:
+                profile, _w = profile_store.load(mid)
+                res = profile_synth.synthesize(
+                    profile, body.intent, body.subject, body.reference_role, loras=body.loras
+                )
+            except KeyError:
+                res = {
+                    "prompt": body.intent,
+                    "rule_note": "no profile (dynamic model) — raw intent",
+                    "paradigm": "instruction",
+                }
+            entry["prompt"] = res["prompt"]
+            entry["rule_note"] = res["rule_note"]
+            entry["paradigm"] = res["paradigm"]
+
+            spec = registry.get(mid)
+            use_real = (not body.mock) and bool(key)
+            if not use_real:
+                # mock path — deterministic per-model tint (prompt hash + per-model seed)
+                # so tiles visibly differ; composite through the shared feathered alpha.
+                res_crop = compose.mock_edit(crop, res["prompt"], seed)
+                res_crop = _maybe_harmonize(session.rgb, region, res_crop, cmask, body.harmonize)
+                out = compose.composite_back(session.rgb, region, res_crop, alpha)
+                entry["status"] = "completed"
+                entry["slug"] = spec.slug if spec else mid
+                entry["result_png"] = imaging.png_to_base64(out, "RGB")
+                continue
+
+            params = dict(body.params)
+            params.setdefault("seed", seed)
+            slug, payload = registry.build_payload(
+                mid, crop, cmask, res["prompt"], params, reference_rgb,
+                body.reference_role, body.loras,
+            )
+            pid = wavespeed.submit(slug, payload, key)
+            job = jobs.create(
+                rgb=session.rgb, region=region, alpha=alpha, crop_rgb=crop,
+                crop_mask=cmask, prompt=res["prompt"], slug=slug, harmonize=body.harmonize,
+            )
+            job.mode = "wavespeed"
+            job.status = "polling"
+            job.prediction_id = pid
+            entry["status"] = "polling"
+            entry["job_id"] = job.id
+            entry["slug"] = slug
+        except Exception as e:  # partial failure is normal — never blocks the rest
+            entry["status"] = "failed"
+            entry["error"] = str(e)
+
+    return {"run_id": uuid.uuid4().hex, "region": list(region), "jobs": out_jobs}
+
+
+class ExemplarIn(BaseModel):
+    model_id: str
+    intent: str
+    prompt: str
+
+
+@app.post("/profiles/exemplar")
+def add_exemplar(body: ExemplarIn) -> dict:
+    """Append an (intent → winning prompt) exemplar to a model's user profile layer
+    (shootout winner feedback). Append-only, capped, persisted to the config dir."""
+    try:
+        return profile_store.append_exemplar(body.model_id, body.intent, body.prompt)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown model")
+
+
 class FinishIn(BaseModel):
     image_png: Optional[str] = None  # finish this image; else the active base
     id: Optional[str] = None
