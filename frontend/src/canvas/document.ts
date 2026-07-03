@@ -44,6 +44,8 @@ export interface RefSpec {
 export interface LayerSource {
   model: string;
   prompt: string;
+  /** Parsed edit operation (prompt-intelligence EditSpec) — keys the keep/reroll telemetry. */
+  operation?: string;
   seed: number;
   params: Record<string, number>;
   sendRegion: Region;

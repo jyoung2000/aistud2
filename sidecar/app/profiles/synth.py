@@ -1,43 +1,35 @@
 """Synthesis — one intent → a model-tuned prompt, grounded in the selection.
 
-Two cheap calls per edit in the full design: (1) vision-grounding of the crop → a factual
-description + the subject as a noun phrase; (2) intent classification → edit type. Then a
-fixed paradigm transform applies the profile's template + preservation clause + style rules,
-enforcing constraints (token cap; negatives only if supported). The synthesis LOGIC is fixed
-code; the profile supplies data only (templates/clauses) and can never raise the token cap
-or weaken safety. Vision grounding is stubbed here (no LLM); subject/description are passed
-in or defaulted.
+Since the prompt-intelligence build this is a thin façade over the real pipeline:
+
+    parse_intent (app.prompting.intent)   — casual text → structured EditSpec
+    build_context (app.prompting.context) — mask geometry + LAB scene stats + pipeline state
+    compile_prompt (app.prompting.compiler) — per-model, per-paradigm clause assembly
+    polish_prompt (app.prompting.polish)   — OPTIONAL LLM smoothing (off by default)
+
+The synthesis LOGIC is fixed code; the profile supplies data only (grammar/claims/vocab
+from the sourced research layers + the user's edits) and can never raise the token cap
+or weaken safety. Everything below the polish pass is deterministic and offline.
+
+The legacy signature is preserved for /shootout and older callers; they get the full
+compiler through the same call. `rule_note` stays populated (joined rationale summary).
 """
 from __future__ import annotations
 
-import re
-from typing import Dict, Optional, Tuple
+from typing import List, Optional
 
-_TEXT_EDIT = re.compile(r"""replace\s+['"](?P<old>[^'"]+)['"]\s+with\s+['"](?P<new>[^'"]+)['"]""", re.I)
-
-
-def classify(intent: str) -> Tuple[str, Dict[str, str]]:
-    m = _TEXT_EDIT.search(intent or "")
-    if m:
-        return "text_edit", {"old": m.group("old"), "new": m.group("new")}
-    return "generic", {}
+from app.prompting.compiler import compile_prompt
+from app.prompting.context import build_context
+from app.prompting.intent import parse_intent
 
 
-def _truncate(text: str, max_tokens: int) -> Tuple[str, bool]:
-    # ~1.3 tokens/word heuristic
-    max_words = max(4, int(max_tokens / 1.3))
-    words = text.split()
-    if len(words) <= max_words:
-        return text, False
-    return " ".join(words[:max_words]).rstrip(",.") + ".", True
-
-
-def _fmt(tmpl: str, **kw) -> str:
-    class _Safe(dict):
-        def __missing__(self, k):  # leave unknown placeholders blank, never crash
-            return ""
-
-    return tmpl.format_map(_Safe(**kw))
+def _lora_triggers(loras: Optional[list]) -> List[str]:
+    triggers: List[str] = []
+    for lo in loras or []:
+        for tw in lo.get("trigger_words", []) or ([lo["trigger"]] if lo.get("trigger") else []):
+            if tw and tw not in triggers:
+                triggers.append(tw)
+    return triggers
 
 
 def synthesize(
@@ -47,52 +39,80 @@ def synthesize(
     reference_role: Optional[str] = None,
     crop_desc: Optional[str] = None,
     loras: Optional[list] = None,
+    *,
+    rgb=None,
+    mask=None,
+    selection_label: Optional[str] = None,
+    strength: str = "normal",
+    polish: bool = False,
+    operation_override: Optional[str] = None,
 ) -> dict:
-    paradigm = profile.get("paradigm", "instruction")
-    subject = (subject or "the selected subject").strip()
-    preservation = profile.get("preservation_clause", "")
-    templates: dict = profile.get("templates", {}) or {}
-    rules = []
+    """intent (+ optional pixels/mask for context grounding) → tuned prompt package.
 
-    edit_type, slots = classify(intent)
-    if edit_type == "text_edit" and "text_edit" in templates:
-        prompt = _fmt(templates["text_edit"], old=slots["old"], new=slots["new"],
-                      preservation=preservation, subject=subject, intent=intent)
-        rules.append("text-edit: forced Replace 'old' with 'new'")
-    else:
-        key_by_paradigm = {
-            "instruction": "instruction",
-            "inpaint": "inpaint",
-            "controlnet": "controlnet",
-            "reference/character": "reference",
-        }
-        key = key_by_paradigm.get(paradigm, "instruction")
-        if reference_role and "reference" in templates:
-            key = "reference"
-        tmpl = templates.get(key) or templates.get("instruction") or "{intent}. {preservation}"
-        prompt = _fmt(tmpl, intent=(intent or "apply the reference"),
-                      preservation=preservation, subject=subject)
-        rules.append(f"{paradigm}: applied '{key}' template")
+    Returns {prompt, negative_prompt, params_overrides, rationale[], clauses[],
+    send_region_pad, edit_spec, paradigm, ambiguities[], rule_note, polished}.
+    `rgb`/`mask` are optional numpy arrays — without them the compiler still runs on
+    the parsed intent alone (mock path / no session), it just has less context.
+    """
+    spec = parse_intent(intent)
+    if subject and not spec.target_noun:
+        spec.target_noun = subject
+    # the UI's one-click parse correction: the user says what the parser got wrong
+    from app.prompting.intent import OPERATIONS
 
-    if crop_desc:
-        rules.append("vision-grounded subject")
-    if reference_role:
-        rules.append(f"reference role: {reference_role}")
+    if operation_override and operation_override in OPERATIONS:
+        if operation_override != spec.operation:
+            spec.rule = f"user-corrected: {spec.rule} → {operation_override}"
+        spec.operation = operation_override
 
-    # LoRA trigger-word injection — prepend any attached LoRA triggers so the LoRA fires.
-    if loras:
-        triggers: list = []
-        for lo in loras:
-            for tw in lo.get("trigger_words", []) or ([lo["trigger"]] if lo.get("trigger") else []):
-                if tw and tw not in triggers:
-                    triggers.append(tw)
-        if triggers:
-            prompt = f"{', '.join(triggers)}, {prompt}"
-            rules.append(f"injected LoRA trigger(s): {', '.join(triggers)}")
+    ctx = build_context(
+        rgb,
+        mask,
+        selection_label=selection_label or subject or crop_desc,
+        reference_role=reference_role,
+        lora_triggers=_lora_triggers(loras),
+        paradigm=profile.get("paradigm"),
+    )
 
-    max_tokens = int(profile.get("constraints", {}).get("max_prompt_tokens", 512))
-    prompt, truncated = _truncate(" ".join(prompt.split()), max_tokens)
-    if truncated:
-        rules.append(f"truncated to token cap {max_tokens}")
+    result = compile_prompt(spec, ctx, profile, strength=strength)
 
-    return {"prompt": prompt.strip(), "rule_note": "; ".join(rules), "paradigm": paradigm}
+    # feedback-loop retrieval: past KEPT exemplars steer the rationale (guidance the user
+    # can see — never verbatim prompt injection from the untrusted user layer)
+    try:
+        from app.profiles import store as _store
+
+        near = _store.nearest_exemplars(profile, spec.operation, intent, k=2)
+        for e in near:
+            result["rationale"].append(
+                f"similar kept edit: “{str(e.get('intent',''))[:60]}” → "
+                f"“{str(e.get('prompt',''))[:80]}”"
+            )
+    except Exception:
+        pass  # retrieval is a bonus, never a blocker
+
+    polished = False
+    if polish:
+        try:
+            from app.prompting.polish import polish_prompt
+
+            better = polish_prompt(result["prompt"], profile, result["paradigm"])
+            if better:
+                result["rationale"].append("LLM polish applied (claude-haiku, temperature 0)")
+                result["prompt"] = better
+                polished = True
+        except Exception:
+            pass  # polish never breaks the deterministic result
+
+    # legacy compatibility: shootout tiles + older UI read rule_note
+    top = [r for r in result["rationale"] if r.startswith(("change:", "mitigation"))][:2]
+    rule_note = "; ".join(
+        [f"{result['paradigm']}: {spec.operation} ({spec.rule})"] + top
+    )
+
+    return {
+        **result,
+        "edit_spec": spec.to_dict(),
+        "ambiguities": list(spec.ambiguities),
+        "rule_note": rule_note,
+        "polished": polished,
+    }

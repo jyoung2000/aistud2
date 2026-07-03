@@ -1,0 +1,74 @@
+model: qwen-image-edit-plus
+paradigm: instruction
+layer: research
+version: research-2026-07
+prompt_grammar:
+  voice: imperative
+  person: 2nd-person command
+  tense: present
+  ideal_length_tokens: 50
+  structure:
+  - change_clause
+  - preservation_clause
+dos:
+- rule: For text edits, state the exact target text; Qwen-Image-Edit does bilingual
+    (EN/ZH) text add/delete/modify while preserving font, size, and style.
+  source: https://qwenlm.github.io/blog/qwen-image-edit/
+  confidence: confirmed
+- rule: Quote the exact strings to change — tutorials consistently use quoted replacements
+    for reliable text edits.
+  source: https://github.com/FurkanGozukara/Stable-Diffusion/wiki/Qwen-Image-Edit-Full-Tutorial-26-Different-Demo-Cases-Prompts-and-Images-Pwns-FLUX-Kontext-Dev
+  confidence: inferred
+- rule: Use plain imperative instructions; the model supports both appearance edits
+    (add/remove/modify elements) and semantic edits (style transfer, object rotation,
+    IP re-creation).
+  source: https://qwenlm.github.io/blog/qwen-image-edit/
+  confidence: confirmed
+- rule: Chain small edits progressively for corrections instead of one big prompt
+    (official chained-editing examples).
+  source: https://qwenlm.github.io/blog/qwen-image-edit/
+  confidence: confirmed
+- rule: State what to keep — appearance editing 'keeps other regions of the image
+    completely unchanged' when the instruction is scoped to the target.
+  source: https://qwenlm.github.io/blog/qwen-image-edit/
+  confidence: confirmed
+donts:
+- rule: Don't rely on vague pronouns; name the object/text to edit.
+  source: https://github.com/FurkanGozukara/Stable-Diffusion/wiki/Qwen-Image-Edit-Full-Tutorial-26-Different-Demo-Cases-Prompts-and-Images-Pwns-FLUX-Kontext-Dev
+  confidence: inferred
+negative_prompt:
+  supported: false
+  field: null
+  default: null
+  source: https://wavespeed.ai/models/wavespeed-ai/qwen-image/edit-plus
+  confidence: confirmed
+param_guidance:
+  seed:
+    sweet_spot: -1 (random) or fixed for reproducibility
+    tradeoff: fixed seed = repeatable framing across re-runs
+    source: https://wavespeed.ai/models/wavespeed-ai/qwen-image/edit-plus
+    confidence: confirmed
+known_failures:
+- pattern: identity/pose drift with multiple people
+  mitigation: prefer the 2511 generation (improved multi-person identity/pose consistency)
+    and add preservation language
+  flag: likely_person
+  source: https://wavespeed.ai/models/wavespeed-ai/qwen-image/edit-2511-lora
+  confidence: confirmed
+vocab:
+  text_edit:
+  - replace
+  - the text reads
+  - matching the original font
+  preservation:
+  - keep
+  - unchanged
+  - identical
+example_prompts: []
+sources:
+- https://qwenlm.github.io/blog/qwen-image-edit/
+- https://huggingface.co/Qwen/Qwen-Image-Edit
+- https://github.com/FurkanGozukara/Stable-Diffusion/wiki/Qwen-Image-Edit-Full-Tutorial-26-Different-Demo-Cases-Prompts-and-Images-Pwns-FLUX-Kontext-Dev
+- https://docs.comfy.org/tutorials/image/qwen/qwen-image-edit
+- https://wavespeed.ai/models/wavespeed-ai/qwen-image/edit-plus
+notes: 'Edit-Plus: same grammar; multi-image reference input for replace/pose roles.'

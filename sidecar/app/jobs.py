@@ -34,6 +34,7 @@ class Job:
     error: Optional[str] = None
     cost_cents: Optional[float] = None
     harmonize: Optional[dict] = None  # seam-harmonization opts applied on composite
+    low_change: bool = False  # result barely differed from the source crop (no-change detection)
 
     def release_heavy(self, drop_result: bool = False) -> None:
         """Drop the big arrays once terminal; keep metadata for idempotent re-polls.

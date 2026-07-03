@@ -1,0 +1,32 @@
+name: Sidecar tests
+
+# Prompt-intelligence guardrails on every push: the golden prompt snapshots
+# (every operation × paradigm, incl. remove-on-inpaint → background description),
+# the intent-parser rules, and the profile audit (zero unsourced claims).
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install sidecar deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r sidecar/requirements.txt pytest
+
+      - name: Profile audit — every claim sourced
+        run: python -m app.profiles.audit
+        working-directory: sidecar
+
+      - name: Test suite (golden prompts + intent rules)
+        run: python -m pytest tests/ -q
+        working-directory: sidecar

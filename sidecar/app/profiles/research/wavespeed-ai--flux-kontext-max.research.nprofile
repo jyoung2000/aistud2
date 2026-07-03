@@ -1,0 +1,128 @@
+model: wavespeed-ai/flux-kontext-max
+paradigm: instruction
+layer: research
+version: research-2026-07
+prompt_grammar:
+  voice: imperative
+  person: 2nd-person command to the editor
+  tense: present
+  ideal_length_tokens: 60
+  structure:
+  - change_clause
+  - context_clause
+  - preservation_clause
+dos:
+- rule: 'Use clear action verbs: change, add, remove, replace.'
+  source: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
+  confidence: confirmed
+- rule: Name subjects explicitly — 'the woman with short black hair', never pronouns
+    like 'her'.
+  source: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
+  confidence: confirmed
+- rule: 'State what must NOT change with explicit preservation language: ''while maintaining
+    the same facial features, hairstyle, and expression''.'
+  source: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
+  confidence: confirmed
+- rule: 'Anchor composition when swapping backgrounds: ''keep the person in the exact
+    same position, scale, and pose''.'
+  source: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
+  confidence: confirmed
+- rule: 'Edit text with the exact syntax: Replace ''[original text]'' with ''[new
+    text]''.'
+  source: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
+  confidence: confirmed
+- rule: Start with a simple edit and iterate; chain small edits rather than stacking
+    many changes in one prompt.
+  source: https://comfyui-wiki.com/en/tutorial/advanced/image/flux/flux-1-kontext
+  confidence: inferred
+- rule: 'Name the style explicitly for restyles: ''Change to Bauhaus art style while
+    maintaining the original composition and object placement''.'
+  source: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
+  confidence: confirmed
+donts:
+- rule: Avoid vague quality asks like 'make it better' — specify the dimension ('change
+    the wall color to blue').
+  source: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
+  confidence: confirmed
+- rule: Avoid vague pronouns ('it', 'her', 'that thing') — the model needs the subject
+    named.
+  source: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
+  confidence: confirmed
+- rule: Don't pack many unrelated edits into one prompt; results degrade — iterate
+    instead.
+  source: https://www.mimicpc.com/learn/flux-kontext-prompt-guide-how-to-edit-images
+  confidence: inferred
+negative_prompt:
+  supported: false
+  field: null
+  default: null
+  source: https://wavespeed.ai/docs-api/flux-kontext-max
+  confidence: confirmed
+param_guidance:
+  guidance_scale:
+    sweet_spot: ~2.5 (WaveSpeed default)
+    tradeoff: higher = stronger prompt adherence but risks oversaturation/artifacts;
+      lower = subtler edits
+    source: https://wavespeed.ai/docs-api/flux-kontext-dev
+    confidence: confirmed
+  num_inference_steps:
+    sweet_spot: ~28 (default); quality plateaus beyond ~40
+    tradeoff: more steps = slower with diminishing returns
+    source: https://wavespeed.ai/docs-api/flux-kontext-dev
+    confidence: confirmed
+known_failures:
+- pattern: identity drift on faces across heavy or repeated edits
+  mitigation: add an explicit preservation clause naming facial features/hairstyle/expression
+    and keep edits incremental
+  flag: likely_person
+  source: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
+  confidence: confirmed
+- pattern: composition shifts when the background is changed
+  mitigation: add a context clause pinning position/scale/pose of the subject
+  flag: background_swap
+  source: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
+  confidence: confirmed
+- pattern: small selections can be ignored or repainted coarsely
+  mitigation: expand the send-region padding and restate the object's small scale
+    in the prompt
+  flag: small_object
+  source: https://www.mimicpc.com/learn/flux-kontext-prompt-guide-how-to-edit-images
+  confidence: inferred
+vocab:
+  verbs:
+  - change
+  - add
+  - remove
+  - replace
+  - convert
+  - transform
+  preservation:
+  - while maintaining
+  - keep the exact same
+  - identical
+  - unchanged
+  - preserving
+  style:
+  - art style
+  - composition
+  - object placement
+example_prompts:
+- prompt: Change the background to a tropical beach with sunset colors while keeping
+    the woman in the exact same position and pose, maintaining her facial features,
+    expression, and clothing details
+  source: https://www.mimicpc.com/learn/flux-kontext-prompt-guide-how-to-edit-images
+- prompt: Change to Bauhaus art style while maintaining the original composition and
+    object placement
+  source: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
+- prompt: Replace 'OPEN' with 'CLOSED'
+  source: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
+sources:
+- https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
+- https://replicate.com/blog/flux-kontext
+- https://comfyui-wiki.com/en/tutorial/advanced/image/flux/flux-1-kontext
+- https://www.mimicpc.com/learn/flux-kontext-prompt-guide-how-to-edit-images
+- https://wavespeed.ai/docs-api/flux-kontext-max
+constraints:
+  max_prompt_tokens: 512
+notes: 'BFL''s Kontext i2i prompting guide is the primary source (max 512 tokens).
+  Max tier: maximum adherence/typography/consistency (WaveSpeed card).'

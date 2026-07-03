@@ -1,0 +1,35 @@
+model: bytedance/seedream-v4.5/edit
+paradigm: instruction
+layer: research
+version: research-2026-07
+prompt_grammar:
+  voice: imperative
+  person: 2nd-person command
+  tense: present
+  ideal_length_tokens: 60
+  structure:
+  - change_clause
+  - preservation_clause
+dos:
+- rule: 'Lean on its strength: it ''preserves facial features, lighting, and color
+    tone from reference images'' — good default for people edits.'
+  source: https://wavespeed.ai/models/bytedance/seedream-v4.5/edit
+  confidence: confirmed
+- rule: Use edit-sequential for multi-step consistent edit chains.
+  source: https://wavespeed.ai/models/bytedance/seedream-v4.5/edit-sequential
+  confidence: confirmed
+donts: []
+negative_prompt:
+  supported: false
+  field: null
+  default: null
+  source: https://wavespeed.ai/models/bytedance/seedream-v4.5/edit
+  confidence: inferred
+param_guidance: {}
+known_failures: []
+vocab: {}
+example_prompts: []
+sources:
+- https://wavespeed.ai/models/bytedance/seedream-v4.5/edit
+- https://wavespeed.ai/models/bytedance/seedream-v4.5/edit-sequential
+notes: 'Seedream 4.5 Edit: high-fidelity edits up to 4K (WaveSpeed card).'

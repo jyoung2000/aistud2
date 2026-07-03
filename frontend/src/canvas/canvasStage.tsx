@@ -63,6 +63,8 @@ import {
 import { b64ToFile, outpaint, finishImage, fillBehind } from "../api/generate";
 import { saveFile } from "../api/saveFile";
 import { runShootout, recordExemplar } from "../api/shootout";
+import { synthesizeRemote, sendFeedback, type CompiledPrompt } from "../api/promptSynthesis";
+import { TunedPromptDisclosure } from "../panels/tunedPrompts";
 import { modelById } from "../api/referenceModels";
 import { getGenConfig, useGenConfig } from "../state/genConfig";
 import { toastError, toastSuccess, toast } from "../ui/toast";
@@ -187,6 +189,17 @@ export function CanvasStage() {
   const [variations, setVariations] = useState<{ seed: number; url: string }[]>([]);
   const [varK, setVarK] = useState(4);
   const [shootoutRun, setShootoutRun] = useState<ShootoutState | null>(null);
+
+  // prompt intelligence (PI Stage 6): the sidecar compiles the intent into a model-tuned
+  // prompt; the disclosure under the prompt shows it. An edited disclosure (override) is
+  // sent verbatim and skips the compiler's params/pad hints.
+  const [compiled, setCompiled] = useState<CompiledPrompt | null>(null);
+  const [promptOverride, setPromptOverride] = useState<string | null>(null);
+  const [opOverride, setOpOverride] = useState<string | null>(null);
+  const [lowChange, setLowChange] = useState(false);
+  const synthSeq = useRef(0);
+  const lastGenMask = useRef<MaskBuffer | null>(null);
+  const liveCfg = useGenConfig();
 
   // layer document — `img` is the base (never replaced after open); edits become layers.
   const [layers, setLayers] = useState<DocLayer[]>([]);
@@ -1657,6 +1670,10 @@ export function CanvasStage() {
     const maskPng = maskToPngDataUrl(L.mask, img.naturalWidth, img.naturalHeight);
     pushHistory();
     setGenStatus("busy");
+    // re-rolling = the previous result wasn't kept — local telemetry for picker badges
+    if (L.source.model && L.source.model !== "mock") {
+      void sendFeedback(L.source.model, false, L.source.operation);
+    }
     try {
       // reuse the layer's stored source (model, prompt, params, reference presence) and
       // bump the seed; the current reference image rides along when the source had one.
@@ -2321,24 +2338,96 @@ export function CanvasStage() {
     return c;
   };
 
+  // --- prompt intelligence: debounced sidecar compile of the intent (PI Stage 6) ---
+  // Model id for synthesis: the selected model, else the compiler's default instruction
+  // profile (the mock path sees the same tuned prompt a real Kontext call would get).
+  const synthModelId = liveCfg.modelId ?? "flux-kontext";
+  // an operation correction applies to ONE parse — a new intent gets a fresh parse
+  const prevIntent = useRef(prompt);
+  useEffect(() => {
+    if (prompt !== prevIntent.current) {
+      prevIntent.current = prompt;
+      setOpOverride(null);
+    }
+  }, [prompt]);
+  useEffect(() => {
+    setPromptOverride(null); // intent/model changed → any hand edit is stale
+    if (!prompt.trim()) {
+      setCompiled(null);
+      setOpOverride(null);
+      return;
+    }
+    const seq = ++synthSeq.current;
+    const timer = window.setTimeout(async () => {
+      try {
+        const hasMask = !!(imageId && mask && !mask.isEmpty());
+        const res = await synthesizeRemote({
+          model_id: synthModelId,
+          intent: prompt,
+          reference_role: liveCfg.referencePng ? liveCfg.referenceRole ?? undefined : undefined,
+          loras: liveCfg.loras.length ? liveCfg.loras : undefined,
+          id: hasMask ? imageId! : undefined,
+          mask_png: hasMask ? maskToPngDataUrl(mask!.data, mask!.width, mask!.height) : undefined,
+          operation: opOverride ?? undefined,
+        });
+        if (seq === synthSeq.current) setCompiled(res);
+      } catch {
+        if (seq === synthSeq.current) setCompiled(null); // sidecar down → raw prompt is sent
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prompt, synthModelId, liveCfg.referenceRole, liveCfg.referencePng, liveCfg.loras, opOverride]);
+
   // crop -> model -> feathered composite; result becomes a new ai-edit layer. The inspector's
   // model + reference/pose + LoRAs ride along via the shared genConfig store (reference M3).
-  const generateNow = async () => {
-    if (!imageId || !mask || mask.isEmpty()) return;
+  const generateNow = async (variant?: { strong?: boolean }) => {
+    // the "stronger variant" retry runs after the selection was captured onto the layer
+    // and cleared — fall back to the mask the last generation used
+    const mb = mask && !mask.isEmpty() ? mask : lastGenMask.current;
+    if (!imageId || !mb || mb.isEmpty()) return;
     pushHistory();
     const cfg = getGenConfig();
-    const maskPng = maskToPngDataUrl(mask.data, mask.width, mask.height);
+    const maskPng = maskToPngDataUrl(mb.data, mb.width, mb.height);
     setGenStatus("busy");
+    setLowChange(false);
     try {
+      // The compiled (model-tuned) prompt is what's sent; a hand-edited disclosure is
+      // sent verbatim and skips the compiler's params/pad hints (user override).
+      let sendPrompt = promptOverride ?? compiled?.prompt ?? prompt;
+      let overrides: Record<string, unknown> =
+        compiled && promptOverride == null ? compiled.params_overrides : {};
+      let padHint = compiled && promptOverride == null ? compiled.send_region_pad : null;
+      if (variant?.strong) {
+        try {
+          const strong = await synthesizeRemote({
+            model_id: synthModelId,
+            intent: prompt,
+            reference_role: cfg.referencePng ? cfg.referenceRole ?? undefined : undefined,
+            loras: cfg.loras.length ? cfg.loras : undefined,
+            id: imageId,
+            mask_png: maskPng,
+            operation: opOverride ?? undefined,
+            strength: "strong",
+          });
+          sendPrompt = strong.prompt;
+          overrides = strong.params_overrides;
+          padHint = strong.send_region_pad;
+        } catch {
+          /* stronger synth unavailable → re-send the last prompt with a new seed */
+        }
+      }
       // No model selected → mock path; otherwise the real model (the sidecar still falls
       // back to mock when no WaveSpeed key is set).
-      const opts = genOptsFromConfig(0);
+      const opts = genOptsFromConfig(variant?.strong ? 1 : 0);
+      opts.params = { ...(opts.params ?? {}), ...overrides };
+      if (padHint != null) opts.pad_frac = padHint; // known-failure mitigation: wider crop
       const params = opts.params ?? {};
-      const job = await generate(imageId, maskPng, prompt, opts);
+      const job = await generate(imageId, maskPng, sendPrompt, opts);
       const done = await runToCompletion(job, (s) =>
         setGenStatus(s === "polling" ? "polling" : "busy")
       );
-      if (done.status === "completed" && done.result_png && img && mask) {
+      if (done.status === "completed" && done.result_png && img) {
         const im = await resultToImage(done.result_png);
         const id = newLayerId();
         layerImgs.current.set(id, im);
@@ -2350,31 +2439,36 @@ export function CanvasStage() {
           opacity: 1,
           blendMode: "normal",
           kind: "ai-edit",
-          mask: new Uint8Array(mask.data),
+          mask: new Uint8Array(mb.data),
           resultUrl: `data:image/png;base64,${done.result_png}`,
           source: {
             model: done.mode === "mock" ? "mock" : cfg.modelId ?? "wavespeed",
-            prompt,
-            seed: 0,
+            prompt: sendPrompt,
+            operation: compiled?.edit_spec.operation,
+            seed: variant?.strong ? 1 : 0,
             params: (params as Record<string, number>),
             sendRegion: (done.region as [number, number, number, number]) ?? [0, 0, img.naturalWidth - 1, img.naturalHeight - 1],
             reference: cfg.referencePng ? { role: cfg.referenceRole ?? "replace", present: true } : undefined,
             pose: cfg.pose,
           },
           harmonize: { ...harmonize },
-          bounds: boundsFromMask(mask.data, img.naturalWidth, img.naturalHeight) ?? undefined,
+          bounds: boundsFromMask(mb.data, img.naturalWidth, img.naturalHeight) ?? undefined,
           transform: { ...IDENTITY_TRANSFORM },
         };
         setLayers((ls) => [...ls, layer]); // top of stack
         setActiveLayer(id);
         setImgVer((v) => v + 1);
         setHistory((h) =>
-          [{ url: `data:image/png;base64,${done.result_png}`, prompt }, ...h].slice(0, 12)
+          [{ url: `data:image/png;base64,${done.result_png}`, prompt: sendPrompt }, ...h].slice(0, 12)
         );
-        // the selection is captured on the layer; clear the working mask
+        // the selection is captured on the layer; clear the working mask (kept in
+        // lastGenMask so the "stronger variant" retry can re-run the same region)
+        lastGenMask.current = mb;
         setMask(new MaskBuffer(img.naturalWidth, img.naturalHeight));
         setSamPoints([]);
         setGenStatus("done");
+        // no-change detection → offer a one-click stronger variant in the disclosure
+        setLowChange(!!done.low_change && !variant?.strong);
         toastSuccess(`Edit complete — added layer "AI edit ${n}"`);
         emitMilestone("generate");
         fireTip("viewmodes");
@@ -3033,10 +3127,17 @@ export function CanvasStage() {
           setPrompt(v);
           if (v.trim()) emitMilestone("prompt");
         }}
+        compiled={compiled}
+        promptOverride={promptOverride}
+        onOverride={setPromptOverride}
+        opOverride={opOverride}
+        onOpOverride={setOpOverride}
+        lowChange={lowChange}
+        onStronger={() => void generateNow({ strong: true })}
         hasSelection={!!mask && !mask.isEmpty()}
         status={genStatus}
         canGenerate={!!imageId && !!mask && !mask.isEmpty() && genStatus !== "busy" && genStatus !== "polling"}
-        onGenerate={generateNow}
+        onGenerate={() => void generateNow()}
         onShootout={runShootoutNow}
         shootout={shootoutRun}
         onKeepTile={keepShootoutTile}
@@ -3091,6 +3192,13 @@ export function CanvasStage() {
 function GenerateBar({
   prompt,
   onPrompt,
+  compiled,
+  promptOverride,
+  onOverride,
+  opOverride,
+  onOpOverride,
+  lowChange,
+  onStronger,
   hasSelection,
   status,
   canGenerate,
@@ -3114,6 +3222,13 @@ function GenerateBar({
 }: {
   prompt: string;
   onPrompt: (v: string) => void;
+  compiled: CompiledPrompt | null;
+  promptOverride: string | null;
+  onOverride: (v: string | null) => void;
+  opOverride: string | null;
+  onOpOverride: (op: string | null) => void;
+  lowChange: boolean;
+  onStronger: () => void;
   hasSelection: boolean;
   status: "idle" | "busy" | "polling" | "done" | "failed";
   canGenerate: boolean;
@@ -3289,6 +3404,22 @@ function GenerateBar({
           <span style={{ fontSize: 11, color: chip.c, minWidth: 56 }}>{chip.t}</span>
         )}
       </div>
+
+      {/* prompt intelligence: the compiled, model-tuned prompt + rationale + corrections */}
+      {!compare && (
+        <TunedPromptDisclosure
+          compiled={prompt.trim() ? compiled : null}
+          modelLabel={cfg.modelLabel ?? "FLUX Kontext (default profile)"}
+          override={promptOverride}
+          onOverride={onOverride}
+          operation={opOverride}
+          onOperation={onOpOverride}
+          onQuickAnswer={(ans) => onPrompt(`${prompt.trim().replace(/[.!?]+$/, "")}, ${ans}`)}
+          lowChange={lowChange}
+          onStronger={onStronger}
+          busy={running}
+        />
+      )}
 
       {shootout && (
         <div

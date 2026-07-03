@@ -95,3 +95,20 @@ def mock_edit(crop_rgb: np.ndarray, prompt: str, seed: int = 0) -> np.ndarray:
     mag = 1.0 + (((int(seed) * 2654435761) >> 7) % 5) * 0.35
     out = np.clip(crop_rgb.astype(np.float32) + shift * mag, 0, 255).astype(np.uint8)
     return out
+
+
+def low_change(crop_before: np.ndarray, crop_after: np.ndarray, crop_mask: np.ndarray,
+               threshold: float = 4.0) -> bool:
+    """True when the model barely changed the selected pixels (mean |Δ| inside the mask
+    under `threshold` on 0–255) — powers the "result barely changed → try a stronger
+    variant" suggestion. Pure numpy, shape-safe, never raises."""
+    try:
+        if crop_before.shape != crop_after.shape:
+            return False
+        sel = crop_mask > 0
+        if not sel.any():
+            return False
+        d = np.abs(crop_after.astype(np.int16) - crop_before.astype(np.int16))
+        return float(d[sel].mean()) < threshold
+    except Exception:
+        return False

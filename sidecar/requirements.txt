@@ -23,6 +23,10 @@ scipy>=1.11                    # gradients / zero-crossings (Phase 4)
 pyyaml>=6                      # .nprofile parsing (Phase 8)
 jsonschema>=4                  # .nprofile validation (Phase 8)
 
+# --- optional (feature-gated at runtime; the app never requires them) ---
+# anthropic                    # LLM prompt polish (prompting/polish.py) — off by default
+# pytest                       # sidecar test suite (tests/) — dev only
+
 # --- heavy / GPU (install separately on the target; auto-detected at runtime) ---
 # torch, torchvision           # install per-CUDA: --index-url https://download.pytorch.org/whl/cu124
 # sam2                         # SAM 2 (Phase 3) — from facebookresearch/sam2 + a checkpoint

@@ -1,12 +1,89 @@
-// One intent -> N tuned prompts (shootout M2).
-//
-// STUB synthesis: a deterministic, paradigm-aware transform so the comparison view can show
-// how each model's prompt differs from the SAME intent. The real synthesis (Phase 8) runs in
-// the sidecar (`profiles/synth.py`): vision-grounds the crop, classifies the edit type, then
-// applies the model's profile (paradigm transform, style rules, preservation clause,
-// constraints). Keep this signature stable so the UI swaps to a sidecar call unchanged.
+// Prompt intelligence client. The REAL pipeline runs in the sidecar
+// (intent → SelectionContext → per-model compiler, `POST /synthesize`) — use
+// `synthesizeRemote`. The local stub transform below survives only as the offline
+// fallback so the compare pane never blanks when the sidecar is unreachable.
 
+import { baseUrl } from "./sidecar";
 import type { ModelRefCaps, ReferenceRole } from "./referenceModels";
+
+// --- sidecar compiler ---------------------------------------------------------------
+
+export const OPERATIONS = [
+  "replace", "remove", "add", "restyle", "recolor", "retexture", "pose_change",
+  "expression", "background_swap", "text_edit", "relight", "upscale_detail",
+] as const;
+
+export interface PromptClause {
+  text: string;
+  kind: string; // change | preservation | reference | lora | mitigation | scene | quality | ...
+  reason: string;
+}
+
+export interface EditSpecOut {
+  operation: string;
+  target_noun: string | null;
+  new_content: string | null;
+  attributes: string[];
+  preserve: string[];
+  ambiguities: string[];
+  specificity: "low" | "med" | "high";
+  raw: string;
+  rule: string;
+}
+
+export interface CompiledPrompt {
+  prompt: string;
+  negative_prompt: string | null;
+  params_overrides: Record<string, unknown>;
+  rationale: string[];
+  clauses: PromptClause[];
+  send_region_pad: number | null;
+  edit_spec: EditSpecOut;
+  ambiguities: string[];
+  rule_note: string;
+  paradigm: string;
+  polished?: boolean;
+  warnings?: string[];
+}
+
+/** Full prompt-intelligence pass in the sidecar: intent + (optional) selection context →
+ *  per-model compiled prompt with clause-level rationale. Works with no key and no mask. */
+export async function synthesizeRemote(body: {
+  model_id: string;
+  intent: string;
+  subject?: string;
+  reference_role?: string;
+  loras?: { ref: string; weight: number; trigger_words: string[] }[];
+  /** Session id + mask (data URL ok) let the compiler see geometry + scene stats. */
+  id?: string;
+  mask_png?: string;
+  selection_label?: string;
+  strength?: "normal" | "strong";
+  operation?: string; // one-click parse correction
+}): Promise<CompiledPrompt> {
+  const res = await fetch(`${await baseUrl()}/synthesize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`/synthesize ${res.status}: ${await res.text()}`);
+  return (await res.json()) as CompiledPrompt;
+}
+
+/** Record a keep/reroll signal for a model+operation (local telemetry → picker badges). */
+export async function sendFeedback(modelId: string, kept: boolean, operation?: string): Promise<void> {
+  try {
+    await fetch(`${await baseUrl()}/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_id: modelId, kept, operation }),
+    });
+  } catch {
+    /* advisory — never blocks the edit */
+  }
+}
+
+// --- offline stub (fallback only) -----------------------------------------------------
 
 export interface SynthInput {
   /** What the user wants to happen (verbatim, shared across all models). */

@@ -27,6 +27,7 @@ from app import loras as lora_lib
 from app.jobs import jobs
 from app.matting import EdgeRefiner
 from app.models import registry, wavespeed
+from app.profiles import feedback as profile_feedback
 from app.profiles import store as profile_store
 from app.profiles import synth as profile_synth
 from app.select_sam import SmartSelector
@@ -429,6 +430,8 @@ def list_models(refresh: bool = False) -> dict:
         "dynamic_error": result["dynamic_error"],
         "dynamic_count": result["dynamic_count"],
         "has_key": bool(key),
+        # local keep/reroll telemetry per model (picker badges) — {} until the user edits
+        "feedback": profile_feedback.stats(),
     }
 
 
@@ -534,6 +537,8 @@ def generate(body: GenerateIn) -> dict:
         job.status = "completed"
         job.result_png = imaging.png_to_base64(out, "RGB")
         payload = _job_payload(job)
+        # no-change detection: barely-different pixels → suggest a stronger variant
+        payload["low_change"] = compose.low_change(crop, res, cmask)
         # terminal + result served in this very response → drop all heavy state now
         job.release_heavy(drop_result=True)
         return payload
@@ -594,6 +599,8 @@ def poll_generation(body: PollIn) -> dict:
             out = compose.composite_back(job.rgb, job.region, res, job.alpha)
             job.status = "completed"
             job.result_png = imaging.png_to_base64(out, "RGB")
+            # no-change detection against the original crop (pre-release, buffers live)
+            job.low_change = compose.low_change(job.crop_rgb, res, job.crop_mask)
         except Exception as e:
             job.status = "failed"
             job.error = f"composite failed: {e}"
@@ -601,6 +608,8 @@ def poll_generation(body: PollIn) -> dict:
         job.status = "failed"
         job.error = err
     payload = _job_payload(job)
+    if getattr(job, "low_change", False):
+        payload["low_change"] = True
     if job.status in ("completed", "failed"):
         # composited (or dead): buffers + the served result are no longer needed
         job.release_heavy(drop_result=True)
@@ -687,15 +696,12 @@ def shootout(body: ShootoutIn) -> dict:
             # no profile — fall back to the raw intent, honestly annotated)
             try:
                 profile, _w = profile_store.load(mid)
-                res = profile_synth.synthesize(
-                    profile, body.intent, body.subject, body.reference_role, loras=body.loras
-                )
             except KeyError:
-                res = {
-                    "prompt": body.intent,
-                    "rule_note": "no profile (dynamic model) — raw intent",
-                    "paradigm": "instruction",
-                }
+                profile = profile_store.load_for_dynamic(mid)
+            res = profile_synth.synthesize(
+                profile, body.intent, body.subject, body.reference_role, loras=body.loras,
+                rgb=session.rgb, mask=mask,
+            )
             entry["prompt"] = res["prompt"]
             entry["rule_note"] = res["rule_note"]
             entry["paradigm"] = res["paradigm"]
@@ -741,16 +747,45 @@ class ExemplarIn(BaseModel):
     model_id: str
     intent: str
     prompt: str
+    operation: Optional[str] = None
+    kept: bool = True
 
 
 @app.post("/profiles/exemplar")
 def add_exemplar(body: ExemplarIn) -> dict:
-    """Append an (intent → winning prompt) exemplar to a model's user profile layer
-    (shootout winner feedback). Append-only, capped, persisted to the config dir."""
+    """Append a structured {intent, operation, prompt, kept} exemplar to a model's user
+    profile layer (shootout/keep feedback). Append-only, capped, persisted to the config
+    dir. Also bumps the keep/reroll telemetry so picker badges stay in sync."""
+    import time as _time
+
     try:
-        return profile_store.append_exemplar(body.model_id, body.intent, body.prompt)
+        out = profile_store.append_exemplar(
+            body.model_id, body.intent, body.prompt,
+            operation=body.operation, kept=body.kept, ts=_time.time(),
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown model")
+    profile_feedback.record(body.model_id, kept=body.kept, operation=body.operation)
+    return out
+
+
+class FeedbackIn(BaseModel):
+    model_id: str
+    kept: bool
+    operation: Optional[str] = None
+
+
+@app.post("/feedback")
+def post_feedback(body: FeedbackIn) -> dict:
+    """Record a keep (result committed) or reroll (user retried) for a model+operation.
+    Local-only counters in the config dir; surfaced as picker badges via /models."""
+    row = profile_feedback.record(body.model_id, kept=body.kept, operation=body.operation)
+    return {"model_id": body.model_id, "counts": {k: v for k, v in row.items() if k != "_ts"}}
+
+
+@app.get("/feedback")
+def get_feedback() -> dict:
+    return {"stats": profile_feedback.stats()}
 
 
 class FinishIn(BaseModel):
@@ -815,16 +850,42 @@ class SynthIn(BaseModel):
     subject: Optional[str] = None
     reference_role: Optional[str] = None
     loras: list[dict] = []
+    # context grounding (all optional — the compiler runs on the intent alone without them)
+    id: Optional[str] = None            # active image session for scene stats
+    mask_png: Optional[str] = None      # current selection for geometry context
+    selection_label: Optional[str] = None  # decompose layer label under the selection
+    strength: str = "normal"            # "strong" = stronger variant (no-change recovery)
+    polish: bool = False                # opt-in LLM smoothing (needs an Anthropic key)
+    operation: Optional[str] = None     # one-click parse correction from the intent chip
 
 
 @app.post("/synthesize")
 def synthesize_prompt(body: SynthIn) -> dict:
+    """Full prompt-intelligence pass: intent → EditSpec → SelectionContext → per-model
+    compiled prompt. Returns {prompt, negative_prompt, rationale, edit_spec,
+    params_overrides, clauses, send_region_pad, ambiguities, ...}."""
     try:
         profile, warnings = profile_store.load(body.model_id)
     except KeyError:
-        raise HTTPException(status_code=404, detail="unknown model")
+        # catalog-discovered model with no registry spec: generic paradigm base + any
+        # shipped research layer for the slug (never a 404 — synthesis must always work)
+        profile = profile_store.load_for_dynamic(body.model_id)
+        warnings = ["dynamic model — generic profile (no hand-tuned adapter)"]
+
+    rgb = mask = None
+    if body.id and body.mask_png:
+        try:
+            session = imaging.require_active(body.id)
+            m = imaging.base64_to_gray(body.mask_png)
+            if m.shape[:2] == (session.height, session.width):
+                rgb, mask = session.rgb, m
+        except Exception:
+            pass  # context is a bonus — synthesis proceeds without it
+
     res = profile_synth.synthesize(
-        profile, body.intent, body.subject, body.reference_role, loras=body.loras
+        profile, body.intent, body.subject, body.reference_role, loras=body.loras,
+        rgb=rgb, mask=mask, selection_label=body.selection_label,
+        strength=body.strength, polish=body.polish, operation_override=body.operation,
     )
     return {**res, "warnings": warnings}
 

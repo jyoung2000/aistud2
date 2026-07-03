@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { COLOR_GENERATION } from "../constants";
-import { getModels, loadModels, modelById, modelsMeta, type ModelRefCaps } from "../api/referenceModels";
+import { feedbackFor, getModels, loadModels, modelById, modelsMeta, type ModelRefCaps } from "../api/referenceModels";
 import { emitMilestone } from "../state/milestones";
 import { fireTip } from "../ui/coachmarks";
 import {
@@ -229,6 +229,19 @@ export function InspectorPipeline() {
             {model.reference_roles.length > 0
               ? `reference: ${model.reference_roles.join(" · ")}`
               : "no reference role"}
+            {(() => {
+              // local keep/reroll telemetry badge — your own history with this model
+              const fb = feedbackFor(model.id);
+              if (!fb || fb.keeps + fb.rerolls < 3) return null;
+              return (
+                <span
+                  title={`Your history with this model: kept ${fb.keeps}, re-rolled ${fb.rerolls}`}
+                  style={{ color: fb.keep_rate >= 0.5 ? "#22c55e" : "#eab308" }}
+                >
+                  ✓ kept {fb.keeps}/{fb.keeps + fb.rerolls}
+                </span>
+              );
+            })()}
           </span>
           {model.confirmed_slug === false && (
             <span style={{ fontSize: 10.5, color: COLOR_GENERATION, lineHeight: 1.4 }}>

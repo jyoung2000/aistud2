@@ -28,7 +28,35 @@ _DIR = Path(__file__).parent
 # Read-only legacy location inside the package (frozen builds bundle it); user profiles are
 # WRITTEN to the config dir, which survives upgrades and works in read-only installs.
 _BUNDLED_STORE = _DIR / "store"
+# Read-only, shipped research layers (Stage 1 of the prompt-intelligence pipeline): every
+# claim carries {source, confidence}; the audit CLI enforces it.
+RESEARCH_DIR = _DIR / "research"
 _SCHEMA_CACHE: dict | None = None
+
+
+def _slug_fname(model_or_slug: str) -> str:
+    """Filesystem-safe research filename: slashes in slugs become '--'."""
+    return model_or_slug.replace("/", "--")
+
+
+def research_path(model_id: str, slug: str | None = None) -> Path | None:
+    """Research layer for a model: by registry id first, then by (sanitized) slug."""
+    for key in filter(None, (model_id, slug)):
+        p = RESEARCH_DIR / f"{_slug_fname(key)}.research.nprofile"
+        if p.exists():
+            return p
+    return None
+
+
+def load_research(model_id: str, slug: str | None = None) -> dict | None:
+    p = research_path(model_id, slug)
+    if p is None:
+        return None
+    try:
+        data = yaml.safe_load(p.read_text("utf-8")) or {}
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
 
 
 def store_dir() -> Path:
@@ -117,9 +145,16 @@ def _enforce_caps(profile: dict) -> Tuple[dict, List[str]]:
     return profile, warnings
 
 
-def load(model_id: str) -> Tuple[dict, List[str]]:
+def load(model_id: str, slug: str | None = None) -> Tuple[dict, List[str]]:
+    """Merged profile. Precedence (weakest → strongest):
+    paradigm default (builder) < research layer < user layer < machine introspection.
+    Introspection is the machine truth and always wins; the user's edits beat shipped
+    research; research beats the offline defaults."""
     profile = base_profile(model_id)
     warnings: List[str] = []
+    research = load_research(model_id, slug)
+    if research:
+        profile = _deep_merge(profile, research)
     user_path = _user_path(model_id)
     if user_path.exists():
         user = yaml.safe_load(user_path.read_text("utf-8")) or {}
@@ -127,6 +162,23 @@ def load(model_id: str) -> Tuple[dict, List[str]]:
     profile, w1 = _enforce_introspection(profile, model_id)
     profile, w2 = _enforce_caps(profile)
     return profile, warnings + w1 + w2
+
+
+def load_for_dynamic(slug: str, paradigm: str = "instruction") -> dict:
+    """Profile for a catalog-discovered model with no registry spec: a generic paradigm
+    base enriched by a research layer when one ships for the slug."""
+    from types import SimpleNamespace
+
+    spec = SimpleNamespace(
+        id=slug, paradigm=paradigm, reference_roles=[], needs_mask=(paradigm == "inpaint"),
+        instruction_based=(paradigm == "instruction"),
+    )
+    profile = builder.build_base(spec)
+    research = load_research(slug)
+    if research:
+        profile = _deep_merge(profile, research)
+    profile, _ = _enforce_caps(profile)
+    return profile
 
 
 def import_profile(text: str, persist: bool = False) -> Tuple[dict, List[str]]:
@@ -150,11 +202,18 @@ def import_profile(text: str, persist: bool = False) -> Tuple[dict, List[str]]:
     return data, warnings
 
 
-def append_exemplar(model_id: str, intent: str, prompt: str) -> dict:
-    """Append an (intent → winning prompt) pair to the model's user layer (shootout M5
-    feedback). Append-only, capped at MAX_EXEMPLARS (oldest dropped), persisted to the
-    config dir. The exemplars ride the untrusted user layer — synthesis treats them as
-    data only."""
+def append_exemplar(
+    model_id: str,
+    intent: str,
+    prompt: str,
+    operation: str | None = None,
+    kept: bool = True,
+    ts: float | None = None,
+) -> dict:
+    """Append a structured exemplar {intent, operation, prompt, kept, ts} to the model's
+    user layer (shootout/keep feedback). Append-only, capped at MAX_EXEMPLARS (oldest
+    dropped), persisted to the config dir. Exemplars ride the untrusted user layer —
+    synthesis treats them as data only (phrasing analogy, never executable)."""
     if not registry.get(model_id):
         raise KeyError(model_id)
     path = store_dir() / f"{model_id}.user.nprofile"
@@ -165,13 +224,37 @@ def append_exemplar(model_id: str, intent: str, prompt: str) -> dict:
     ex = data.setdefault("exemplars", [])
     if not isinstance(ex, list):
         ex = data["exemplars"] = []
-    ex.append({"intent": str(intent)[:500], "prompt": str(prompt)[:2000]})
+    entry: dict = {"intent": str(intent)[:500], "prompt": str(prompt)[:2000], "kept": bool(kept)}
+    if operation:
+        entry["operation"] = str(operation)[:40]
+    if ts is not None:
+        entry["ts"] = float(ts)
+    ex.append(entry)
     del ex[:-MAX_EXEMPLARS]
     data["layer"] = "user"
     data.setdefault("model", model_id)
     store_dir().mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data), "utf-8")
     return {"model": model_id, "exemplars": len(ex)}
+
+
+def nearest_exemplars(profile: dict, operation: str, intent: str, k: int = 2) -> List[dict]:
+    """The k nearest KEPT exemplars by operation match + keyword overlap — used by the
+    compiler as internal phrasing guidance (never appended verbatim to the prompt)."""
+    exemplars = [e for e in profile.get("exemplars", []) if isinstance(e, dict) and e.get("kept", True)]
+    if not exemplars:
+        return []
+    intent_words = set(str(intent).lower().split())
+
+    def score(e: dict) -> float:
+        s = 2.0 if e.get("operation") == operation else 0.0
+        ewords = set(str(e.get("intent", "")).lower().split())
+        if intent_words and ewords:
+            s += len(intent_words & ewords) / max(len(intent_words), 1)
+        return s
+
+    ranked = sorted(exemplars, key=score, reverse=True)
+    return [e for e in ranked[:k] if score(e) > 0]
 
 
 def list_profiles() -> List[dict]:
@@ -184,6 +267,7 @@ def list_profiles() -> List[dict]:
                 "paradigm": prof["paradigm"],
                 "max_prompt_tokens": prof["constraints"]["max_prompt_tokens"],
                 "has_user_layer": _user_path(spec.id).exists(),
+                "has_research_layer": research_path(spec.id, spec.slug) is not None,
             }
         )
     return out

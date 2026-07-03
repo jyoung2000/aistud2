@@ -8,6 +8,8 @@ export interface GenJob {
   region: number[];
   result_png: string | null;
   error: string | null;
+  /** No-change detection: the result barely differs from the source crop inside the mask. */
+  low_change?: boolean;
 }
 
 export interface HarmonizeOpts {

@@ -53,6 +53,7 @@ export const FEATURE_INDEX: FeatureEntry[] = [
   { key: "vary", name: "Vary ×K (seed variations)", keywords: ["vary", "variations", "seeds", "candidates"], tourTarget: "generate", blurb: "Generates K candidates of the same edit; click one to keep it.", group: "AI" },
   { key: "harmonize", name: "Harmonize seam", keywords: ["harmonize", "seam", "color match", "grain"], tourTarget: "generate", blurb: "Color-matches, relights, and grain-matches the edit into its surroundings.", group: "AI" },
   { key: "reroll", name: "Re-roll a layer", keywords: ["reroll", "retry", "seed"], tourTarget: "layers", blurb: "Re-runs a layer's edit with a new seed, in place (↻ on the layer row).", group: "AI" },
+  { key: "tuned-prompt", name: "Tuned prompt (prompt intelligence)", keywords: ["tuned", "compiled", "prompt", "rationale", "operation", "intent", "ambiguity"], tourTarget: "tuned-prompt", blurb: "Your intent is compiled into a model-tuned prompt — hover a clause for its sourced reason, correct the parsed operation, or edit the text to send it verbatim.", group: "AI" },
   // --- View ---
   { key: "view-modes", name: "A|B & Diff views", keywords: ["before", "after", "swipe", "diff", "compare view"], tourTarget: "viewmodes", blurb: "A|B swipes before/after; Diff highlights exactly which pixels changed.", group: "View" },
   { key: "undo", name: "Undo / redo", keywords: ["undo", "redo", "history"], tourTarget: "filebar", blurb: "50 steps deep; zoom and pan stay off the history.", shortcut: "⌘Z / ⌘⇧Z", group: "View" },

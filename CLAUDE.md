@@ -85,6 +85,66 @@ must be just another table entry.
   ancestor — the store is the bridge.) Verified e2e: load→generate(pose ref+strength)→poll
   composites; no key → mock path, key → real model via the same call.
 
+## Prompt Intelligence ("exact change" engine — IMPLEMENTED)
+One pipeline turns casual intent into the exact prompt each model's card says it wants:
+
+```
+user intent ──▶ intent.py (parse → EditSpec)          Stage 2: ~35 ordered rules, 12 operations,
+                    │                                  ambiguities surfaced, never fails
+selection ────▶ context.py (SelectionContext)         Stage 3: mask geometry + LAB scene stats
+                    │                                  (harmonize machinery) + pipeline state
+profile ──────▶ compiler.py (compile_prompt)          Stage 4: per-paradigm clause grammar,
+                    │                                  operation strategies, known-failure
+                    │                                  mitigations, token budget w/ drop order
+                    ├──▶ polish.py (OPTIONAL LLM)      off by default; claude-haiku-4-5, temp 0,
+                    │                                  hard cap; None on any failure
+                    ▼
+        {prompt, negative_prompt, params_overrides, rationale[], clauses[], send_region_pad}
+                    │
+generate ─────▶ verify (no-change detection)          Stage 5: mean |Δ| inside the mask →
+                    │                                  `low_change` → one-click stronger variant
+keep/reroll ──▶ learn (exemplars + telemetry)          structured exemplars (2-nearest retrieval
+                                                       → rationale) + /feedback keep-reroll
+                                                       counters → picker badges
+```
+- **Stage 1 — research layers** (`sidecar/app/profiles/research/*.research.nprofile`, YAML):
+  per-model `prompt_grammar`/`dos`/`donts`/`negative_prompt`/`param_guidance`/`known_failures`
+  /`vocab`/`example_prompts`; EVERY claim carries `{source, confidence: confirmed|inferred}`.
+  Human-readable companion with all citations: `docs/prompt-research.md` (per-model sections
+  generated FROM the layers). Audit CLI: `python -m app.profiles.audit` fails on unsourced
+  claims / invalid confidence / contradictions with machine introspection — runs in CI
+  (`.github/workflows/tests.yml`).
+- **Merge precedence** (weakest→strongest): builder default < research < user layer
+  (`~/.neuclip/profiles/*.user.nprofile` — every model's prompt file is user-editable and
+  shareable) < machine introspection. Untrusted-import rules unchanged (contract #7).
+- **RULE: a new registry model may NOT set `confirmed_slug=true` until it has a research
+  layer** (file named by id, or slug with `/`→`--`). Dynamic catalog models without one run
+  on the generic paradigm profile, honestly labeled.
+- **Key compile strategies** (each cited in code): remove-on-inpaint = describe the
+  background, never a removal command (FLUX Fill card; diffusers#9486 — acceptance-tested);
+  recolor restates identity + "same shape/material/lighting"; text edits quote exact strings
+  (`Replace '[old]' with '[new]'`); background swaps pin the subject; `small_object` context
+  flag widens `send_region_pad` to 0.3; `likely_person` adds an identity lock; LoRA triggers
+  prepended and never dropped by the token budget.
+- **`/synthesize`** accepts `{model_id, intent, subject?, reference_role?, loras?, id?,
+  mask_png?, selection_label?, strength: normal|strong, operation?(parse correction),
+  polish?}` → the full package above + `edit_spec` + `ambiguities` + legacy `rule_note`.
+  `/shootout` compiles per model through the same pipeline (grounded in the shared crop).
+- **Feedback**: `POST /feedback {model_id, kept, operation?}` → `<config>/feedback.json`;
+  stats ride `/models.feedback` → picker badge "✓ kept N/M". `/profiles/exemplar` now takes
+  `operation`/`kept` and bumps telemetry too. Reroll auto-sends `kept:false`.
+- **Frontend** (`panels/tunedPrompts.tsx`): `TunedPromptDisclosure` under the Generate
+  prompt — debounced (400 ms) sidecar compile; clauses hoverable with sourced reasons;
+  operation chip = one-click parse correction (resets on new intent); amber ambiguity chips
+  with quick answers appended to the intent; ✎ edit = user override sent VERBATIM (skips
+  compiler params/pad hints); `low_change` → "Try a stronger variant" (re-runs the captured
+  mask via `lastGenMask`). Compare pane calls the sidecar per model and shows rationale
+  diffs; stub synthesis survives only as the sidecar-down fallback.
+- **Tests** (`sidecar/tests/`, CI): 48 golden snapshots (12 operations × 4 paradigms) +
+  behavioral invariants in `test_prompt_compiler.py`; ~45 parser cases in `test_intent.py`.
+  Goldens are exact strings — intentional phrasing changes mean regenerating and reviewing
+  the diff.
+
 ## Multi-model compare ("shootout")
 Run one edit across 2..N models at once, each prompted from its own research profile, then
 compare and keep the best. **Fairness contract — hold identical across every model in a
@@ -253,7 +313,7 @@ control signal — the **edited** rig, not the raw extraction, becomes the contr
 
 ## Sidecar API surface (target)
 `/health` `/settings` `/load` `/select` `/refine` `/livewire/costmap` `/generate` `/poll`
-`/shootout` `/profiles/exemplar`
+`/shootout` `/profiles/exemplar` `/synthesize` `/feedback`
 - **`/settings` (IMPLEMENTED):** `GET` returns non-secret status (which keys are set, source
   config|env, masked `…last4` hint, config path); `POST` saves keys. Secrets stored in
   `~/.neuclip/config.json` (override `NEUCLIP_CONFIG_DIR`), chmod 600, never returned raw.

@@ -1,0 +1,93 @@
+model: flux-fill
+paradigm: inpaint
+layer: research
+version: research-2026-07
+prompt_grammar:
+  voice: declarative-description
+  person: 3rd-person scene description
+  tense: present
+  ideal_length_tokens: 40
+  structure:
+  - content_description
+  - style_context
+  - quality_tags
+dos:
+- rule: 'Describe ONLY the desired FINAL content of the masked region — the model
+    ''fills masked regions based on a text description'' (official example prompt:
+    ''a white paper cup'').'
+  source: https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev
+  confidence: confirmed
+- rule: Mention material and lighting so the fill matches the surroundings.
+  source: https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev
+  confidence: inferred
+- rule: Use the high default guidance (30) — Fill is tuned for strong prompt adherence
+    in the masked area.
+  source: https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev
+  confidence: confirmed
+donts:
+- rule: Never phrase as an instruction ('remove the cup') — an inpaint model paints
+    what you describe, it does not execute commands.
+  source: https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev
+  confidence: inferred
+- rule: Don't describe the unmasked scene as something to change — content outside
+    the mask is fixed; mentioning it confuses the fill.
+  source: https://github.com/huggingface/diffusers/issues/9486
+  confidence: inferred
+- rule: For removals, don't name the object being removed — describe the background
+    that should exist instead.
+  source: https://github.com/huggingface/diffusers/issues/9486
+  confidence: inferred
+negative_prompt:
+  supported: false
+  field: null
+  default: null
+  source: https://wavespeed.ai/docs/docs-api/wavespeed-ai/flux-fill-dev
+  confidence: confirmed
+param_guidance:
+  guidance_scale:
+    sweet_spot: 30 (official example)
+    tradeoff: much lower = fill ignores the prompt; Fill is calibrated for high guidance
+      unlike base FLUX
+    source: https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev
+    confidence: confirmed
+  num_inference_steps:
+    sweet_spot: 28-50 (official example uses 50)
+    tradeoff: fewer = faster, softer detail
+    source: https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev
+    confidence: confirmed
+known_failures:
+- pattern: '''remove X'' prompts regenerate a similar object because the model must
+    paint something in the mask'
+  mitigation: compile removals as a description of the surrounding background continuing
+    through the region
+  flag: remove
+  source: https://github.com/huggingface/diffusers/issues/9486
+  confidence: inferred
+- pattern: small masks (<3% of frame) give the model too little context
+  mitigation: expand send-region padding and restate the object's scale
+  flag: small_object
+  source: https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev
+  confidence: inferred
+vocab:
+  lighting:
+  - soft light
+  - natural light
+  - matching the surrounding lighting
+  material:
+  - texture
+  - surface
+  - material
+  quality:
+  - photorealistic
+  - seamless
+  - detailed
+example_prompts:
+- prompt: a white paper cup
+  source: https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev
+sources:
+- https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev
+- https://bfl.ai/flux-1-tools/
+- https://wavespeed.ai/docs/docs-api/wavespeed-ai/flux-fill-dev
+- https://github.com/huggingface/diffusers/issues/9486
+notes: 'FLUX.1 Fill dev: mask-based inpainting; ''fills masked area based on text
+  guidance'' (HF card).'

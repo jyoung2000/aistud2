@@ -1,0 +1,52 @@
+model: google/nano-banana-pro/edit
+paradigm: instruction
+layer: research
+version: research-2026-07
+prompt_grammar:
+  voice: declarative-description
+  person: conversational scene narration
+  tense: present
+  ideal_length_tokens: 90
+  structure:
+  - scene_or_change_narration
+  - preservation_clause
+dos:
+- rule: Write narrative, natural-language descriptions — 'describe the scene, don't
+    just list keywords'.
+  source: https://deepmind.google/models/gemini-image/prompt-guide/
+  confidence: confirmed
+- rule: Be hyper-specific about the single element to change; the model does semantic,
+    'pixel-perfect' local edits (e.g. change a sofa's color without disturbing the
+    scene).
+  source: https://blog.google/products/gemini/nano-banana-tips/
+  confidence: confirmed
+- rule: Spell out subject, composition, action, location, and style when the edit
+    is broad.
+  source: https://cloud.google.com/blog/products/ai-machine-learning/ultimate-prompting-guide-for-nano-banana
+  confidence: confirmed
+donts:
+- rule: Skip quality-tag spam ('4k, masterpiece, trending on artstation') — the model
+    understands natural language; be descriptive, not repetitive.
+  source: https://cloud.google.com/blog/products/ai-machine-learning/ultimate-prompting-guide-for-nano-banana
+  confidence: confirmed
+negative_prompt:
+  supported: false
+  field: null
+  default: null
+  source: https://wavespeed.ai/models/google/nano-banana-pro/edit
+  confidence: inferred
+param_guidance: {}
+known_failures: []
+vocab:
+  narration:
+  - the scene shows
+  - in the same lighting
+  - everything else unchanged
+example_prompts: []
+sources:
+- https://deepmind.google/models/gemini-image/prompt-guide/
+- https://blog.google/products/gemini/nano-banana-tips/
+- https://cloud.google.com/blog/products/ai-machine-learning/ultimate-prompting-guide-for-nano-banana
+- https://wavespeed.ai/models/google/nano-banana-pro/edit
+notes: 'Nano Banana Pro (Gemini 3.0 Pro Image) Edit: 4K-capable output (WaveSpeed
+  card).'

@@ -51,6 +51,20 @@ export function modelsMeta(): ModelsMeta {
   return LAST_META;
 }
 
+/** Local keep/reroll telemetry per model (from /models `feedback`) — picker badges. */
+export interface ModelFeedback {
+  keeps: number;
+  rerolls: number;
+  keep_rate: number;
+  by_operation: Record<string, { keep: number; reroll: number }>;
+}
+
+let FEEDBACK: Record<string, ModelFeedback> = {};
+
+export function feedbackFor(modelId: string): ModelFeedback | undefined {
+  return FEEDBACK[modelId];
+}
+
 /** Max models in a comparison set (shootout). Comparison is intentional spend. */
 export const MAX_COMPARE = 6;
 
@@ -140,8 +154,10 @@ export async function loadModels(force = false): Promise<ModelRefCaps[]> {
       dynamic_count?: number;
       dynamic_error?: string | null;
       has_key?: boolean;
+      feedback?: Record<string, ModelFeedback>;
     };
     if (Array.isArray(j.models) && j.models.length) MODELS = j.models;
+    if (j.feedback) FEEDBACK = j.feedback;
     LAST_META = {
       dynamicCount: j.dynamic_count ?? 0,
       dynamicError: j.dynamic_error ?? null,

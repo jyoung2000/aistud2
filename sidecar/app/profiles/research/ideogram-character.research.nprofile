@@ -1,0 +1,78 @@
+model: ideogram-character
+paradigm: reference/character
+layer: research
+version: research-2026-07
+prompt_grammar:
+  voice: declarative-description
+  person: 3rd-person scene description
+  tense: present
+  ideal_length_tokens: 60
+  structure:
+  - identity_clause
+  - scene_clause
+  - style_clause
+dos:
+- rule: Describe the character's physical appearance AND the environment in detail
+    — e.g. '[character] as a 19th-century explorer in a Victorian library, warm tungsten
+    lamps, leather-bound books, fine-art portrait style'.
+  source: https://docs.ideogram.ai/using-ideogram/features-and-tools/reference-features/character-reference
+  confidence: confirmed
+- rule: Use a portrait-style, clear, well-lit reference face (slight angle works best).
+  source: https://docs.ideogram.ai/using-ideogram/features-and-tools/reference-features/character-reference
+  confidence: confirmed
+- rule: Structure prompts as subject → setting → style (Ideogram's own prompt-structure
+    guide).
+  source: https://docs.ideogram.ai/using-ideogram/prompting-guide/3-prompt-structure
+  confidence: confirmed
+- rule: Set style ('Auto'|'Fiction'|'Realistic') and rendering_speed via params rather
+    than prompt words.
+  source: https://wavespeed.ai/models/ideogram-ai/ideogram-character
+  confidence: confirmed
+donts:
+- rule: Don't rely on the prompt to preserve identity — the reference image carries
+    identity; the prompt describes scene and action.
+  source: https://docs.ideogram.ai/using-ideogram/features-and-tools/reference-features/character-reference
+  confidence: inferred
+negative_prompt:
+  supported: false
+  field: null
+  default: null
+  source: https://wavespeed.ai/models/ideogram-ai/ideogram-character
+  confidence: confirmed
+param_guidance:
+  style:
+    sweet_spot: '''Realistic'' for photo composites'
+    tradeoff: '''Fiction'' stylizes; ''Auto'' lets the model pick'
+    source: https://wavespeed.ai/models/ideogram-ai/ideogram-character
+    confidence: confirmed
+  rendering_speed:
+    sweet_spot: '''Default''; ''Quality'' for final renders'
+    tradeoff: '''Turbo'' is fastest but softer'
+    source: https://wavespeed.ai/models/ideogram-ai/ideogram-character
+    confidence: confirmed
+known_failures:
+- pattern: WaveSpeed card's mask/inpaint field names are unverified — scene-targeted
+    inpainting may not be wired
+  mitigation: treat as reference/character generation; keep confirmed_slug=False until
+    fields verified
+  source: https://wavespeed.ai/models/ideogram-ai/ideogram-character
+  confidence: confirmed
+vocab:
+  style:
+  - fine-art portrait style
+  - cinematic
+  - warm tungsten lamps
+  scene:
+  - environment
+  - setting
+  - background
+example_prompts:
+- prompt: as a 19th-century explorer in a Victorian library, warm tungsten lamps,
+    leather-bound books, fine-art portrait style
+  source: https://docs.ideogram.ai/using-ideogram/features-and-tools/reference-features/character-reference
+sources:
+- https://docs.ideogram.ai/using-ideogram/features-and-tools/reference-features/character-reference
+- https://docs.ideogram.ai/using-ideogram/prompting-guide/3-prompt-structure
+- https://wavespeed.ai/models/ideogram-ai/ideogram-character
+notes: Character Reference keeps facial features/hair consistent from a single reference
+  image (Ideogram docs).
