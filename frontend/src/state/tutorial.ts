@@ -2,7 +2,7 @@
 // (mock path, no key needed). Each step waits for the user to actually DO the thing;
 // advancement events are the app milestones, instrumented where they already happen.
 import { useSyncExternalStore } from "react";
-import { onMilestone, type Milestone } from "./milestones";
+import { onMilestone } from "./milestones";
 
 export type TutorialStep = 0 | 1 | 2 | 3 | 4 | 5; // 0 = inactive, 5 = done card
 
@@ -35,19 +35,16 @@ export function tutorialNext(): void {
   set(state.step >= 5 ? 0 : ((state.step + 1) as TutorialStep));
 }
 
-const ADVANCE: Partial<Record<Milestone, TutorialStep>> = {
-  select: 1, // completing step 1 → go to 2
-  prompt: 2,
-  generate: 3,
-  layers: 4,
-};
-
-// milestones advance the matching step (only the CURRENT one — no skipping ahead)
+// Milestones advance the tutorial. Mostly strict (the current step's milestone moves it
+// one forward), with one deliberate exception: a completed GENERATION jumps from step 2
+// OR 3 to 4 — the prompt is pre-filled on step 2, so a user who just presses Enter never
+// fires the "prompt" (typing) milestone and used to strand the tutorial on step 2.
 onMilestone((m) => {
-  const stepFor = ADVANCE[m];
-  if (stepFor && state.step === stepFor) {
-    set((state.step + 1) as TutorialStep);
-  }
+  if (state.step === 0 || state.step >= 5) return;
+  if (m === "select" && state.step === 1) set(2);
+  else if (m === "prompt" && state.step === 2) set(3);
+  else if (m === "generate" && (state.step === 2 || state.step === 3)) set(4);
+  else if (m === "layers" && state.step === 4) set(5);
 });
 
 function subscribe(l: () => void) {

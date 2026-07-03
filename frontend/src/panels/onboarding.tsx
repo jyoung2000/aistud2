@@ -1,12 +1,12 @@
-// First-run onboarding (redesign B1): ONE welcome screen → the Guided First Edit runs on
-// the real app (see panels/tutorial.tsx). The spotlight tour engine below is kept and
-// trimmed to 5 stops — it's the optional "show me the map" layer, reachable from the done
-// card, ? Help, and Settings. API-key setup is NOT here — it's deferred to the moment a
-// real model needs it (inspector banner, B4).
+// First-run onboarding: ONE welcome screen → the interface TOUR runs first (so the user
+// knows where the tools are and what preview mode means BEFORE being asked to do
+// anything) → then the Guided First Edit takes over on the real app
+// (see panels/tutorial.tsx). The tour is also replayable from ? Help / Settings.
 import { useEffect, useLayoutEffect, useState } from "react";
 import { APP_NAME, COLOR_GENERATION, COLOR_SELECTION } from "../constants";
 import type { HealthResponse } from "../api/sidecar";
 import { startTutorial } from "../state/tutorial";
+import { setTipsSuppressed } from "../ui/coachmarks";
 
 const AMBER = COLOR_GENERATION;
 const CYAN = COLOR_SELECTION;
@@ -38,18 +38,23 @@ type Step = {
   body: React.ReactNode;
 };
 
-// The interface tour, trimmed to 5 stops (the tutorial teaches the loop; this is the map).
+// The interface tour — runs BEFORE the guided first edit, in the order you'll use the
+// app: tools → their options → layers → AI panel → generate → keys. The key stop sets
+// the preview-vs-live expectation up front so a keyless first edit never reads as broken.
 const STEPS: Step[] = [
   {
     key: "tools",
     target: "tools",
     color: CYAN,
-    title: "1 · The tool rail",
+    title: "1 · The tools (left rail)",
     body: (
       <>
-        All tools live here — hover any for its name and shortcut. <b>Select (M)</b> is the
-        one to remember: click your subject and it's selected. Selections show as{" "}
-        <span style={{ color: CYAN }}>cyan marching ants</span>; Shift adds, Alt subtracts.
+        Top to bottom: <b>✥ Move</b> (V) moves layers · <b>⬚ Select</b> (M){" "}
+        <u>the one to remember</u> — click your subject and it's selected ·{" "}
+        <b>◠ Lasso</b> (L) draw by hand · <b>✎ Pen</b> editable curves ·{" "}
+        <b>✦ Wand</b> similar colors · <b>🖌 Magic Brush</b> (W) paint roughly, AI snaps it
+        · <b>✋ Hand</b> (H) pan. Hover any icon for its name.{" "}
+        <span style={{ color: CYAN }}>Cyan = selection</span> everywhere in the app.
       </>
     ),
   },
@@ -57,12 +62,26 @@ const STEPS: Step[] = [
     key: "optionsbar",
     target: "optionsbar",
     color: CYAN,
-    title: "2 · Tool options",
+    title: "2 · The active tool's options",
     body: (
       <>
-        This bar always shows <b>only the active tool's options</b> — Select gets
-        “Select subject” and select-by-text, the Wand gets tolerance, the Brush gets size
-        and snap. Advanced options sit behind <b>⋯ More</b>.
+        This bar always shows <b>only the current tool's options</b> — with Select active
+        you get <b>⊙ Select subject</b> (one click finds the main subject) and
+        select-by-text; the Wand gets tolerance, the Brush gets size and snap. Advanced
+        selection ops sit behind <b>⋯ More</b>.
+      </>
+    ),
+  },
+  {
+    key: "layers",
+    target: "layers",
+    color: "#e9ecf2",
+    title: "3 · Layers (right)",
+    body: (
+      <>
+        Every edit lands here as a <b>layer</b> — hide it, fade it, re-roll it, or delete
+        it; your original pixels are never touched. The <b>getting-started checklist</b>{" "}
+        at the top tracks your first steps.
       </>
     ),
   },
@@ -70,37 +89,60 @@ const STEPS: Step[] = [
     key: "inspector",
     target: "inspector",
     color: AMBER,
-    title: "3 · The AI panel (amber = AI)",
+    title: "4 · The AI panel (amber = AI)",
     body: (
       <>
-        Pick a <b>model</b>, attach a <b>reference image</b> (replace / match-pose / style),
-        stack <b>LoRAs</b>, or turn on <b>Compare</b> to run several models at once. Only
-        the crop of your selection is ever sent.
+        Pick which <b>model</b> runs your edit, attach a <b>reference image</b> (replace /
+        match-pose / match-style), stack <b>LoRAs</b>, or hit <b>Compare</b> to race
+        several models on the same edit. Only the crop of your selection is ever sent.
       </>
     ),
   },
   {
-    key: "filemenu",
-    target: "filemenu",
-    color: "#8ab4f8",
-    title: "4 · The File menu",
+    key: "generate",
+    target: "generate",
+    color: AMBER,
+    title: "5 · Describe the change",
     body: (
       <>
-        Open images, save <code>.neuclip</code> projects (every layer stays editable),
-        import extra images as layers, and export PNG/JPEG/WebP or a transparent cutout.
+        Select something, type what should happen (“make the jacket golden”), press{" "}
+        <b>Generate</b>. Below the box you'll see the prompt <b>tuned for your model</b> —
+        hover any phrase to see why it's there. Everything outside your selection stays
+        pixel-identical.
       </>
     ),
   },
   {
-    key: "settings",
+    key: "keys",
     target: "settings",
-    color: "#cbd5e1",
-    title: "5 · Settings",
+    color: AMBER,
+    title: "6 · Preview mode vs. live models",
     body: (
       <>
-        API keys, GPU status, the live model list, and the tip switch live here. Press{" "}
-        <b>⌘K</b> anytime for the <b>Feature Finder</b> — type a feature and it shows you
-        where it is.
+        <b>You can learn everything without an API key</b> — Generate runs in{" "}
+        <b>preview mode</b> (a simulated edit) so the flow never blocks. When you want real
+        AI models, add your <b>WaveSpeed key</b> here in ⚙ Settings — the AI panel also
+        shows an amber <b>Add key</b> banner until you do.
+        <div style={{ marginTop: 10 }}>
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent("neuclip:open-settings"))}
+            style={{
+              padding: "6px 12px",
+              borderRadius: 6,
+              border: `1px solid ${AMBER}`,
+              background: "transparent",
+              color: AMBER,
+              cursor: "pointer",
+              fontWeight: 700,
+              fontSize: 12,
+            }}
+          >
+            Add my key now
+          </button>
+          <span style={{ color: "#7d8694", fontSize: 11.5, marginLeft: 8 }}>
+            or do it later — preview mode works fine
+          </span>
+        </div>
       </>
     ),
   },
@@ -122,11 +164,22 @@ export function Onboarding({
   // step -1 = welcome screen; 0..N-1 = tour stops
   const [step, setStep] = useState(mode === "tour" ? 0 : -1);
   const [rect, setRect] = useState<Rect | null>(null);
+  // first-run path: after the tour ends, the guided first edit takes over
+  const [thenTutorial, setThenTutorial] = useState(false);
   const s = step >= 0 ? STEPS[step] : null;
 
   useEffect(() => {
-    if (open) setStep(mode === "tour" ? 0 : -1);
+    if (open) {
+      setStep(mode === "tour" ? 0 : -1);
+      setThenTutorial(false);
+    }
   }, [open, mode]);
+
+  // coach marks stay quiet while the welcome/tour overlay owns the screen
+  useEffect(() => {
+    setTipsSuppressed(open);
+    return () => setTipsSuppressed(false);
+  }, [open]);
 
   // Measure the spotlighted element (and keep it in sync on resize/scroll/layout).
   useLayoutEffect(() => {
@@ -142,11 +195,15 @@ export function Onboarding({
       setRect({ top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, right: r.right });
     };
     raf = requestAnimationFrame(measure);
+    // targets can appear/move while the image loads behind the tour (e.g. the layers
+    // panel only mounts once a document is open) — keep re-measuring
+    const iv = window.setInterval(measure, 400);
     const on = () => measure();
     window.addEventListener("resize", on);
     window.addEventListener("scroll", on, true);
     return () => {
       cancelAnimationFrame(raf);
+      window.clearInterval(iv);
       window.removeEventListener("resize", on);
       window.removeEventListener("scroll", on, true);
     };
@@ -171,12 +228,16 @@ export function Onboarding({
   const finish = () => {
     markOnboarded();
     onClose();
+    // first-run: the tour taught the map — now the guided first edit teaches the loop
+    if (thenTutorial) startTutorial();
   };
   const startWith = (evt: "neuclip:open-sample" | "neuclip:open-image") => {
     markOnboarded();
-    onClose();
+    // open the image behind the tour, then walk the interface FIRST — the user learns
+    // where the tools are (and what preview mode is) before being asked to do anything
     window.dispatchEvent(new CustomEvent(evt));
-    startTutorial(); // the guided first edit takes over on the real app
+    setThenTutorial(true);
+    setStep(0);
   };
 
   // ---------- welcome (one screen, two buttons) ----------
@@ -187,10 +248,14 @@ export function Onboarding({
         <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", padding: 16 }}>
           <div style={{ ...centerCard, textAlign: "center", width: 480 }}>
             <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 10 }}>{APP_NAME}</div>
-            <p style={{ color: "#aeb6c2", lineHeight: 1.55, fontSize: 14, margin: "0 0 22px" }}>
+            <p style={{ color: "#aeb6c2", lineHeight: 1.55, fontSize: 14, margin: "0 0 10px" }}>
               Select anything. Change only that.
               <br />
               Everything else stays pixel-perfect.
+            </p>
+            <p style={{ color: "#7d8694", lineHeight: 1.5, fontSize: 12, margin: "0 0 20px" }}>
+              First a 30-second tour of where everything lives, then you'll make your first
+              edit — no API key needed to try it.
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center" }}>
               <button
@@ -222,7 +287,15 @@ export function Onboarding({
   const spotlighting = !!rect;
 
   const nav = (
-    <Nav step={step} total={STEPS.length} onBack={back} onNext={next} onSkip={finish} color={color} />
+    <Nav
+      step={step}
+      total={STEPS.length}
+      onBack={back}
+      onNext={next}
+      onSkip={finish}
+      color={color}
+      lastLabel={thenTutorial ? "Start my first edit" : "Done"}
+    />
   );
 
   return (
@@ -326,6 +399,7 @@ function Nav({
   onNext,
   onSkip,
   color,
+  lastLabel = "Start editing",
 }: {
   step: number;
   total: number;
@@ -333,10 +407,11 @@ function Nav({
   onNext: () => void;
   onSkip: () => void;
   color: string;
+  lastLabel?: string;
 }) {
   const last = step === total - 1;
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", rowGap: 8 }}>
       <div style={{ display: "flex", gap: 4 }}>
         {Array.from({ length: total }).map((_, i) => (
           <span
@@ -355,7 +430,7 @@ function Nav({
         </button>
       )}
       <button onClick={onNext} style={{ ...primaryBtn, background: color }}>
-        {last ? "Start editing" : "Next"}
+        {last ? lastLabel : "Next"}
       </button>
     </div>
   );

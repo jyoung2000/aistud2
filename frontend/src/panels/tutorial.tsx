@@ -3,6 +3,7 @@
 // fully skippable (Esc / ✕) and resumable from Help.
 import { useEffect, useLayoutEffect, useState } from "react";
 import { COLOR_GENERATION, COLOR_SELECTION } from "../constants";
+import { modelsMeta } from "../api/referenceModels";
 import { skipTutorial, tutorialNext, useTutorial } from "../state/tutorial";
 import { setViewState } from "../state/viewState";
 
@@ -19,10 +20,11 @@ const STEPS: {
     color: COLOR_SELECTION,
     text: (
       <>
-        <b>Click the person</b> to select them.
+        We've switched you to the <b>⬚ Select tool</b> (in the left rail, shortcut{" "}
+        <b>M</b>). Now <b>click the person</b> to select them.
       </>
     ),
-    waitFor: "The ants appearing is the payoff",
+    waitFor: "The cyan marching ants appearing is the payoff",
   },
   {
     step: 2,
@@ -30,10 +32,11 @@ const STEPS: {
     color: COLOR_GENERATION,
     text: (
       <>
-        Now <b>describe a change</b> — try “make the jacket golden”.
+        Now <b>describe a change</b> in the amber box below — we pre-filled “make the
+        jacket golden”. Just <b>press Enter</b>.
       </>
     ),
-    waitFor: "We pre-filled a suggestion — just press Enter",
+    waitFor: "", // the preview-mode note renders separately (needs live key state)
   },
   {
     step: 3,
@@ -63,11 +66,28 @@ const STEPS: {
 export function Tutorial({ onTour }: { onTour: () => void }) {
   const { step } = useTutorial();
   const [rect, setRect] = useState<DOMRect | null>(null);
+  const [genError, setGenError] = useState<string | null>(null);
   const def = STEPS.find((s) => s.step === step);
+
+  // step 1: make sure the RIGHT tool is active — a first-run user shouldn't have to know
+  // that clicking with Move selects layers, not pixels
+  useEffect(() => {
+    if (step === 1) window.dispatchEvent(new CustomEvent("neuclip:set-tool", { detail: "select" }));
+  }, [step]);
 
   // suggest a prompt the user can just Enter (step 2)
   useEffect(() => {
     if (step === 2) window.dispatchEvent(new CustomEvent("neuclip:suggest-prompt", { detail: "make the jacket golden" }));
+  }, [step]);
+
+  // a failed generation during the tutorial gets an explanation, not a silent red chip
+  useEffect(() => {
+    const onFail = (e: Event) => setGenError((e as CustomEvent<string>).detail || "generation failed");
+    window.addEventListener("neuclip:generate-failed", onFail);
+    return () => window.removeEventListener("neuclip:generate-failed", onFail);
+  }, []);
+  useEffect(() => {
+    setGenError(null); // clear the hint whenever the step moves on
   }, [step]);
 
   // after the generation completes (step 3 → 4): flash the Diff view for 2s — the proof
@@ -135,7 +155,7 @@ export function Tutorial({ onTour }: { onTour: () => void }) {
               }}
               style={{ padding: "8px 14px", borderRadius: 7, border: "none", background: COLOR_GENERATION, color: "#1a160e", cursor: "pointer", fontWeight: 700, fontSize: 13 }}
             >
-              Show me around (45s tour)
+              Replay the tour
             </button>
           </div>
         </div>
@@ -195,6 +215,21 @@ export function Tutorial({ onTour }: { onTour: () => void }) {
       <span style={{ flex: 1, lineHeight: 1.5 }}>
         {def.text}
         {def.waitFor && <div style={{ color: "#7d8694", fontSize: 11, marginTop: 4 }}>{def.waitFor}</div>}
+        {(step === 2 || step === 3) && (
+          <div style={{ color: "#8a8371", fontSize: 11, marginTop: 5, lineHeight: 1.45 }}>
+            {modelsMeta().hasKey
+              ? "Runs on the real model — only your selection's crop is sent."
+              : "No API key yet, so this runs in preview mode (a simulated edit) — perfect for learning. Add your WaveSpeed key in ⚙ Settings whenever you're ready for real models."}
+          </div>
+        )}
+        {genError && (step === 2 || step === 3) && (
+          <div style={{ color: "#f2c078", fontSize: 11, marginTop: 6, lineHeight: 1.45 }}>
+            ⚠ That didn't go through: {genError.slice(0, 90)}.{" "}
+            {modelsMeta().hasKey
+              ? "Check your key in ⚙ Settings — then press Enter to retry."
+              : "Press Enter to retry — preview mode needs no key."}
+          </div>
+        )}
         {step === 4 && (
           <button
             onClick={tutorialNext}

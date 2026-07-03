@@ -35,6 +35,7 @@ import {
   runToCompletion,
   maskToPngDataUrl,
   resultToImage,
+  type GenJob,
   type GenOpts,
   type HarmonizeOpts,
 } from "../api/generate";
@@ -356,13 +357,19 @@ export function CanvasStage() {
       const v = (e as CustomEvent<string>).detail;
       if (v) setPrompt((cur) => (cur.trim() ? cur : v));
     };
+    const onSetTool = (e: Event) => {
+      const t = (e as CustomEvent<Tool>).detail;
+      if (t) setTool(t); // tutorial step 1 forces Select so the first click selects pixels
+    };
     window.addEventListener("neuclip:open-sample", onSample);
     window.addEventListener("neuclip:open-image", onOpen);
     window.addEventListener("neuclip:suggest-prompt", onSuggest);
+    window.addEventListener("neuclip:set-tool", onSetTool);
     return () => {
       window.removeEventListener("neuclip:open-sample", onSample);
       window.removeEventListener("neuclip:open-image", onOpen);
       window.removeEventListener("neuclip:suggest-prompt", onSuggest);
+      window.removeEventListener("neuclip:set-tool", onSetTool);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1653,7 +1660,8 @@ export function CanvasStage() {
       mock: !cfg.modelId,
       model_slug: cfg.modelId ?? undefined,
       reference_png: cfg.referencePng ?? undefined,
-      reference_role: cfg.referenceRole ?? undefined,
+      // a role with no reference image attached is meaningless — never send it alone
+      reference_role: cfg.referencePng ? cfg.referenceRole ?? undefined : undefined,
       params,
       loras: cfg.loras.length ? cfg.loras : undefined,
       harmonize,
@@ -2423,7 +2431,21 @@ export function CanvasStage() {
       opts.params = { ...(opts.params ?? {}), ...overrides };
       if (padHint != null) opts.pad_frac = padHint; // known-failure mitigation: wider crop
       const params = opts.params ?? {};
-      const job = await generate(imageId, maskPng, sendPrompt, opts);
+      let job: GenJob;
+      try {
+        job = await generate(imageId, maskPng, sendPrompt, opts);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // desktop resilience: a restarted sidecar forgets the uploaded image (409) —
+        // silently re-upload the base and retry once instead of failing the first edit
+        if (/409|active image/i.test(msg) && img) {
+          const up = await loadImageToSidecar(await b64ToFile(imgToDataUrl(img)));
+          setImageId(up.id);
+          job = await generate(up.id, maskPng, sendPrompt, opts);
+        } else {
+          throw err;
+        }
+      }
       const done = await runToCompletion(job, (s) =>
         setGenStatus(s === "polling" ? "polling" : "busy")
       );
@@ -2478,10 +2500,15 @@ export function CanvasStage() {
         }
       } else {
         setGenStatus("failed");
+        const why = done.error ?? "the model returned no result";
+        toastError(`Generation failed: ${why} — your selection and image are untouched.`);
+        window.dispatchEvent(new CustomEvent("neuclip:generate-failed", { detail: why }));
       }
     } catch (e) {
       console.error("generate failed:", e);
-      toastError("Generation failed — your selection and image are untouched.");
+      const why = e instanceof Error ? e.message : String(e);
+      toastError(`Generation failed: ${why.slice(0, 120)} — your selection and image are untouched.`);
+      window.dispatchEvent(new CustomEvent("neuclip:generate-failed", { detail: why }));
       setGenStatus("failed");
     }
   };

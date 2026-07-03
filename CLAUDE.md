@@ -276,22 +276,41 @@ control signal — the **edited** rig, not the raw extraction, becomes the contr
   (ring only); Hand/Space=grab.
 
 ## Onboarding architecture (4 independent layers)
-1. **Guided First Edit** (`panels/tutorial.tsx` + `state/tutorial.ts`): first run shows a
-   ONE-screen welcome (sample photo / own image / skip) → 4 do-it-yourself steps on the
-   real app (select → prompt (pre-filled) → generate → layer), each advancing on the real
-   milestone; after generate the Diff view flashes 2 s as the crop-only proof. Done card
-   offers the 5-stop interface tour. Esc/✕ skips; replay from ? Help.
-2. **Contextual coach marks** (`ui/coachmarks.tsx`): one-time single-sentence tips fired
+**ORDER (post-fix): welcome → interface tour → guided first edit.** The tour teaches the
+map (where the tools are, what preview mode means) BEFORE the tutorial asks the user to do
+anything — a first-run user must never be told "click the person" without knowing which
+tool does that, and a keyless Generate must never read as broken.
+1. **Interface tour first** (`panels/onboarding.tsx`): welcome (sample / own image / skip,
+   with a "30-second tour, then your first edit — no API key needed" expectation line) →
+   the image opens BEHIND the tour → 6 spotlight stops in usage order: tool rail (every
+   tool named w/ shortcut), options bar, layers panel, AI panel, generate bar, and a
+   **preview-vs-live key stop** on ⚙ Settings ("Add my key now" → `neuclip:open-settings`,
+   or continue keyless). Last button = "Start my first edit" → the tutorial. Tour targets
+   re-measure on an interval (panels mount as the image loads). Replay (from ? Help /
+   Settings / done card) runs the tour alone.
+2. **Guided First Edit** (`panels/tutorial.tsx` + `state/tutorial.ts`): 4 do-it-yourself
+   steps on the real app (select → prompt (pre-filled) → generate → layer), each advancing
+   on the real milestone; after generate the Diff view flashes 2 s as the crop-only proof.
+   Step 1 **forces the Select tool** (`neuclip:set-tool`) and names it + its rail location
+   (Move would select layers, not pixels). Steps 2–3 carry a preview-mode note when no key
+   is set. **Advance rule:** a completed generation advances from step 2 OR 3 (the
+   pre-filled prompt + Enter never fires the typing milestone — used to strand step 2).
+   `neuclip:generate-failed` (fired by generateNow with the real reason, also in the toast)
+   renders a friendly retry hint instead of a silent red chip. Esc/✕ skips.
+3. **Contextual coach marks** (`ui/coachmarks.tsx`): one-time single-sentence tips fired
    at first relevance (tool picked, first selection, import, 2nd AI edit, GPU idle …),
-   tracked as `neuclip.tip.<key>`, max one visible, never during the tutorial, global
-   kill-switch in Settings (`neuclip.tips.disabled`).
-3. **Persistent help** (`panels/help.tsx`): ? Help menu; **Feature Finder** (⌘K palette
+   tracked as `neuclip.tip.<key>`, max one visible, never during the tutorial AND
+   suppressed while the welcome/tour overlay is open (`setTipsSuppressed`), side-placed
+   for full-height targets (the tool rail), global kill-switch in Settings
+   (`neuclip.tips.disabled`).
+4. **Persistent help** (`panels/help.tsx`): ? Help menu; **Feature Finder** (⌘K palette
    over `ui/featureIndex.ts`, ~40 entries) spotlights any feature's location via
    `ui/spotlight.tsx`; `?` opens the shortcut overlay GENERATED from the featureIndex.
-4. **Deferred key setup + checklist**: no key ask up front — an amber "preview mode"
-   banner in the AI panel opens Settings at the moment of motivation ("Live — N models"
-   toast after save). Getting-started checklist (5 items) lives atop the Layers panel,
-   driven by `state/milestones.ts`, rows spotlight their feature, auto-dismisses at 5/5.
+5. **Deferred key setup + checklist**: the tour's key stop sets the preview-vs-live
+   expectation up front, but never blocks — an amber "preview mode" banner in the AI
+   panel opens Settings at the moment of motivation ("Live — N models" toast after save).
+   Getting-started checklist (5 items) lives atop the Layers panel, driven by
+   `state/milestones.ts`, rows spotlight their feature, auto-dismisses at 5/5.
 - **RULE: every new feature ships with a `featureIndex.ts` entry + a `data-tour`
   attribute on its element (+ optionally a coach mark).** The tutorial/tour/tips all key
   off `state/milestones.ts` — emit a milestone when adding a new user-visible action.
@@ -334,20 +353,19 @@ control signal — the **edited** rig, not the raw extraction, becomes the contr
   `api/referenceModels.ts` `loadModels(force?)` + `modelsMeta()`; ⚙ Settings shows a
   "Refresh model list" + live count.
 
-## First-run onboarding (IMPLEMENTED — spotlight tour)
-- `frontend/src/panels/onboarding.tsx` — an interactive **coach-mark tour** shown once on first
-  launch (gated by `localStorage` `neuclip.onboarded.v3`, mounted from `App.tsx` after the sidecar
-  connects). Centered panels for welcome + **API keys** (`Save & test connection` runs
-  `loadModels(true)`, reports live-model count / device) + done; between them it **spotlights the
-  real UI elements** one at a time — dims the screen with a box-shadow cutout + pulsing ring around
-  the target and anchors a callout beside it (placement auto-picks the side with room). Steps
-  target `data-tour` anchors: `open` (ZoomBar Open button), `tools` (the Move/Select/Lasso/Pen/Hand
-  group, each explained with icon+shortcut), `filebar` (import/flatten/auto-separate/crop/extend),
-  `inspector` (model + reference/pose + LoRA + compare), `generate` (prompt + Generate), `settings`
-  (header ⚙). All anchors render before an image is loaded, so the tour works on a blank canvas.
-  Arrow-key / Enter navigation; re-openable via ⚙ Settings ▸ **Show walkthrough**. Cyan=selection /
-  amber=AI reinforced throughout. Anchors are `data-tour="…"` attributes on the live components
-  (canvasStage ZoomBar/FileBar/GenerateBar, inspectorPipeline aside, App settings button).
+## First-run onboarding (IMPLEMENTED — tour-first spotlight flow)
+- `frontend/src/panels/onboarding.tsx` — shown once on first launch (gated by `localStorage`
+  `neuclip.onboarded.v3`, mounted from `App.tsx` after the sidecar connects). Flow: ONE welcome
+  screen (sample / own image / skip) → the chosen image opens BEHIND the overlay → **6-stop
+  spotlight tour** (dims with a box-shadow cutout + pulsing ring, callout auto-picks the side with
+  room, targets re-measured on an interval as panels mount): `tools` (all 7 tools named with
+  shortcuts, cyan=selection), `optionsbar`, `layers`, `inspector` (amber=AI), `generate`, and
+  `settings` as the **preview-vs-live key stop** ("Add my key now" → `neuclip:open-settings`, or
+  continue keyless — Generate simulates edits until a WaveSpeed key exists, so nothing "fails").
+  Last button "Start my first edit" → `startTutorial()` (guided first edit). Arrow-key / Enter
+  navigation; replayable via ⚙ Settings ▸ **Show walkthrough** / ? Help / the tutorial done card
+  (replay runs the tour alone, no tutorial after). Coach marks are suppressed while the overlay is
+  open. Anchors are `data-tour="…"` attributes on the live components.
 
 ## Sidecar <-> Tauri handshake (Phase 0, IMPLEMENTED)
 - Sidecar binds a port: tries `NEUCLIP_SIDECAR_PORT` (default 8756); on conflict it

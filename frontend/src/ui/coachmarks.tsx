@@ -52,10 +52,18 @@ function hide() {
   emit();
 }
 
-/** Fire a tip by key: shows once ever, one at a time, never during the tutorial. */
+// The welcome/tour overlay suppresses tips entirely — a coach mark popping over (or
+// under) the tour is noise; the tip stays unconsumed and fires at its next trigger.
+let overlayActive = false;
+export function setTipsSuppressed(v: boolean): void {
+  overlayActive = v;
+  if (v) hide();
+}
+
+/** Fire a tip by key: shows once ever, one at a time, never during the tutorial/tour. */
 export function fireTip(key: keyof typeof TIPS | string): void {
   const def = TIPS[key as string];
-  if (!def || visible || tipsDisabled() || isTutorialActive()) return;
+  if (!def || visible || tipsDisabled() || isTutorialActive() || overlayActive) return;
   try {
     if (localStorage.getItem(tipKey(key as string)) === "1") return;
     localStorage.setItem(tipKey(key as string), "1");
@@ -97,14 +105,19 @@ export function CoachMarks() {
 
   if (!tip || !rect) return null;
   const below = window.innerHeight - rect.bottom > 90;
+  const above = !below && rect.top > 90;
+  // tall full-height targets (the tool rail) fit neither above nor below → sit beside
+  const pos: React.CSSProperties = below
+    ? { top: rect.bottom + 10, left: Math.max(8, Math.min(rect.left + rect.width / 2 - 150, window.innerWidth - 310)) }
+    : above
+    ? { bottom: window.innerHeight - rect.top + 10, left: Math.max(8, Math.min(rect.left + rect.width / 2 - 150, window.innerWidth - 310)) }
+    : { top: Math.max(8, rect.top + 12), left: Math.min(rect.right + 10, window.innerWidth - 310) };
   return (
     <div
       style={{
         position: "fixed",
         zIndex: 2500,
-        left: Math.max(8, Math.min(rect.left + rect.width / 2 - 150, window.innerWidth - 310)),
-        top: below ? rect.bottom + 10 : undefined,
-        bottom: below ? undefined : window.innerHeight - rect.top + 10,
+        ...pos,
         width: 300,
         background: "#12151a",
         border: "1px solid #38bdf866",
