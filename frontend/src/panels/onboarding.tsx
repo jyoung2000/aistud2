@@ -50,11 +50,12 @@ const STEPS: Step[] = [
     body: (
       <>
         Top to bottom: <b>✥ Move</b> (V) moves layers · <b>⬚ Select</b> (M){" "}
-        <u>the one to remember</u> — click your subject and it's selected ·{" "}
-        <b>◠ Lasso</b> (L) draw by hand · <b>✎ Pen</b> editable curves ·{" "}
-        <b>✦ Wand</b> similar colors · <b>🖌 Magic Brush</b> (W) paint roughly, AI snaps it
-        · <b>✋ Hand</b> (H) pan. Hover any icon for its name.{" "}
-        <span style={{ color: CYAN }}>Cyan = selection</span> everywhere in the app.
+        <u>the one to remember</u> — click an object and it's selected; <b>Ctrl-click</b>{" "}
+        adds another, Alt-click removes, Esc deselects · <b>◠ Lasso</b> (L) draw by hand ·{" "}
+        <b>✎ Pen</b> editable curves · <b>✦ Wand</b> similar colors ·{" "}
+        <b>🖌 Magic Brush</b> (W) paint roughly, AI snaps it · <b>✋ Hand</b> (H) pan. Hover
+        any icon for its name. <span style={{ color: CYAN }}>Cyan = selection</span>{" "}
+        everywhere in the app.
       </>
     ),
   },

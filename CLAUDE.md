@@ -552,10 +552,23 @@ the visible picture is the composite of base → layers (in array order, bottom�
       **classical CPU fallback** (OpenCV GrabCut for box, flood region-grow for points) so
       select runs anywhere. Refine = BiRefNet (env `NEUCLIP_BIREFNET_MODEL`) else
       edge-aware morphological feather. Frontend: `api/select.ts` + canvas Smart-Select
-      tool (click=positive, Shift=add, Alt=negative, drag=box), point markers, Refine/Clear,
-      backend badge (SAM 2 vs CPU). Fallback verified e2e (point→exact bbox, box→GrabCut,
-      refine→soft edges). requirements.txt now installs opencv/scipy/multipart; launchers
-      install full requirements.
+      tool, point markers, Refine/Clear, backend badge (SAM 2 vs CPU). Fallback verified
+      e2e (point→exact bbox, box→GrabCut, refine→soft edges).
+      **Select-tool semantics (post-upgrade, Adobe-style multi-object):** plain click =
+      select the clicked object (replace); **Ctrl/Cmd- or Shift-click = select ANOTHER
+      object and ADD it** (each modifier click runs its own single-point select, combined
+      through the shared boolean pipeline / commitMask — never accumulated into one SAM
+      query); Alt-click = subtract an object; Alt+Ctrl = intersect. Box drags honor the
+      same modifiers and show a **live cyan dashed marquee + translucent fill while
+      dragging** (`boxPreview`, cleared on mouseup). **Esc or the ✕ Deselect button** (in
+      the select/wand options rows) = deselect everything, same as ⌘D. macOS Ctrl-click
+      context menu is suppressed on the Stage for the select tool.
+      **Find (select-by-text)** `selector.semantic()` returns (mask, available, note):
+      GroundingDINO→SAM boxes-union when `NEUCLIP_GDINO_CHECKPOINT`+`_CONFIG` are set
+      (GPU build), else CPU fallbacks — background words → inverse of subject; person/
+      subject words → GrabCut subject; color words → HSV band regions (largest components)
+      — each labeled honestly via `note`; a no-match keeps the current selection and
+      explains what offline Find understands (`tests/test_semantic_select.py`).
 - [x] **Phase 4** — Lasso tools. Sidecar `/livewire/costmap` (Sobel magnitude + Laplacian
       zero-crossing → per-pixel cost, cached per image/contrast, downscaled if huge). Frontend
       `canvas/livewire.ts` (bounded single-source Dijkstra + backtrace, `[`/`]` width),

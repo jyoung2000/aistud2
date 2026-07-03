@@ -159,6 +159,8 @@ export function CanvasStage() {
   const [imageId, setImageId] = useState<string | null>(null);
   const [backend, setBackend] = useState<string | null>(null);
   const [samPoints, setSamPoints] = useState<SamPoint[]>([]);
+  // live marquee rectangle (image space) while the Select tool drags a box
+  const [boxPreview, setBoxPreview] = useState<{ a: Pt; b: Pt } | null>(null);
   const [busy, setBusy] = useState(false);
 
   // lasso state
@@ -624,6 +626,13 @@ export function CanvasStage() {
         } else if (e.key === "Escape") {
           cancelPen();
         }
+      } else if (e.key === "Escape" && (tool === "select" || tool === "wand")) {
+        // Esc = deselect everything (the marching ants disappear) — same as ⌘D
+        if (mask && !mask.isEmpty()) {
+          pushHistory();
+          setMask(new MaskBuffer(mask.width, mask.height));
+        }
+        setSamPoints([]);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -896,18 +905,26 @@ export function CanvasStage() {
     }
   };
 
-  // Run a smart-select and replace the working mask with the result.
+  // Run a smart-select. op="replace" swaps the working mask for the result; any other op
+  // selects the clicked object/region independently and combines it through the shared
+  // boolean pipeline — that's how Ctrl-click builds a multi-object selection.
   const runSelect = async (
     points: SamPoint[],
-    box: [number, number, number, number] | null
+    box: [number, number, number, number] | null,
+    op: BoolOp = "replace"
   ) => {
     if (!imageId || !mask) return;
-    pushHistory();
-    setSamPoints(points);
     setBusy(true);
     try {
       const r = await smartSelect(imageId, points, box);
-      setMask(new MaskBuffer(r.width, r.height, r.data));
+      if (op === "replace") {
+        pushHistory();
+        setSamPoints(points);
+        setMask(new MaskBuffer(r.width, r.height, r.data));
+      } else {
+        commitMask(r.data, op); // add/subtract/intersect into the existing selection
+        setSamPoints((sp) => [...sp, ...points.map((pt) => ({ ...pt, label: (op === "subtract" ? 0 : 1) as 0 | 1 }))]);
+      }
       setBackend(r.backend);
     } catch (e) {
       console.error("select failed:", e);
@@ -915,6 +932,16 @@ export function CanvasStage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  // Select-tool modifier semantics (Adobe-style): Ctrl/Cmd or Shift = add another object,
+  // Alt = remove one, Alt+Shift = intersect. Plain click = new selection.
+  const selOpFrom = (evt: MouseEvent | KeyboardEvent): BoolOp => {
+    const add = evt.ctrlKey || evt.metaKey || evt.shiftKey;
+    if (evt.altKey && add) return "intersect";
+    if (evt.altKey) return "subtract";
+    if (add) return "add";
+    return "replace";
   };
 
   const runRefine = async () => {
@@ -1009,6 +1036,11 @@ export function CanvasStage() {
       }
       return;
     }
+    if (tool === "select" && ip && d && !d.pan && d.moved) {
+      // live marquee: the box the user is dragging is visible while they drag it
+      setBoxPreview({ a: screenToImage(d.down, t), b: ip });
+      return;
+    }
     if (tool === "lasso" && ip) {
       // Polygonal: Shift shows the rubber-band already snapped to 45°, matching what a click
       // will place (PS parity). Otherwise the raw cursor.
@@ -1032,6 +1064,7 @@ export function CanvasStage() {
     const p = ptr(e);
     drag.current = null;
     setPanning(false);
+    setBoxPreview(null); // the marquee lives only while the mouse is down
     if (tool === "pen") {
       penDrag.current = null;
       return;
@@ -1065,8 +1098,10 @@ export function CanvasStage() {
     }
     if (tool !== "select") return;
 
+    const op = selOpFrom(e.evt);
     if (d.moved) {
-      // box prompt → GrabCut / SAM box
+      // box prompt → GrabCut / SAM box (modifiers add/subtract the region, Adobe-style)
+      setBoxPreview(null);
       const a = screenToImage(d.down, t);
       const b = screenToImage(p, t);
       const box: [number, number, number, number] = [
@@ -1075,16 +1110,12 @@ export function CanvasStage() {
         Math.max(a.x, b.x),
         Math.max(a.y, b.y),
       ];
-      void runSelect([], box);
+      void runSelect([], box, op);
     } else {
-      // point prompt. plain = new positive; Shift = add positive; Alt = negative.
+      // point prompt: plain click = select the object; Ctrl/Cmd/Shift-click = ADD another
+      // object to the selection; Alt-click = remove one (multi-object select)
       const ip = screenToImage(p, t);
-      const label: 0 | 1 = e.evt.altKey ? 0 : 1;
-      const accumulate = e.evt.shiftKey || e.evt.altKey;
-      const next: SamPoint[] = accumulate
-        ? [...samPoints, { x: ip.x, y: ip.y, label }]
-        : [{ x: ip.x, y: ip.y, label }];
-      void runSelect(next, null);
+      void runSelect([{ x: ip.x, y: ip.y, label: 1 }], null, op);
     }
   };
 
@@ -1461,13 +1492,20 @@ export function CanvasStage() {
 
   const selectSemantic = async () => {
     if (!imageId || !mask || !semanticText.trim()) return;
-    pushHistory();
     setBusy(true);
     setSelNote(null);
     try {
       const r = await smartSelect(imageId, [], null, { semantic: semanticText.trim() });
-      setMask(new MaskBuffer(r.width, r.height, r.data));
-      if (r.note) setSelNote(r.note);
+      const found = new MaskBuffer(r.width, r.height, r.data);
+      if (found.isEmpty()) {
+        // no match: keep whatever the user had selected and say why nothing happened
+        setSelNote(r.note ?? "no match for that phrase");
+      } else {
+        pushHistory();
+        setMask(found);
+        setSamPoints([]);
+        if (r.note) setSelNote(r.note);
+      }
     } catch (e) {
       console.error("semantic select failed:", e);
       toastError("Select-by-text failed — try a simpler phrase.");
@@ -2831,6 +2869,10 @@ export function CanvasStage() {
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={endDrag}
+          onContextMenu={(e: any) => {
+            // macOS: Ctrl-click is a secondary click — keep it usable as "add to selection"
+            if (tool === "select") e.evt.preventDefault();
+          }}
           onDblClick={() => {
             if (cropEditing) setCropEditing(false);
             else if (tool === "lasso" && lassoPts.length > 2) commitLasso(lassoPts);
@@ -3049,6 +3091,21 @@ export function CanvasStage() {
                 listening={false}
               />
             ))}
+            {boxPreview && (
+              // live marquee while the Select tool drags a box (Adobe-style visible bounds)
+              <Rect
+                x={Math.min(boxPreview.a.x, boxPreview.b.x)}
+                y={Math.min(boxPreview.a.y, boxPreview.b.y)}
+                width={Math.abs(boxPreview.b.x - boxPreview.a.x)}
+                height={Math.abs(boxPreview.b.y - boxPreview.a.y)}
+                stroke={COLOR_SELECTION}
+                strokeWidth={1.5 / t.scale}
+                dash={[6 / t.scale, 4 / t.scale]}
+                fill="rgba(34, 211, 238, 0.10)"
+                listening={false}
+                perfectDrawEnabled={false}
+              />
+            )}
             {tool === "lasso" && lassoPts.length > 0 && (
               <>
                 <Line
@@ -3887,7 +3944,7 @@ function FileBar({
 // --- tools (redesign A2): vertical rail, icon-only, flyout for lasso modes -----------
 const TOOL_DEFS: { id: Tool; icon: string; name: string; desc: string; key: string }[] = [
   { id: "move", icon: "✥", name: "Move", desc: "Move and transform layers; drag from empty space to select several", key: "V" },
-  { id: "select", icon: "⬚", name: "Select", desc: "Click your subject to select it; drag a box for a region", key: "M" },
+  { id: "select", icon: "⬚", name: "Select", desc: "Click an object to select it · Ctrl-click adds another · Alt-click removes · drag a box", key: "M" },
   { id: "lasso", icon: "◠", name: "Lasso", desc: "Draw a selection by hand — long-press for Freehand / Polygon / Magnetic", key: "L" },
   { id: "pen", icon: "✎", name: "Pen", desc: "Click = corner, drag = curve, Alt-click toggles smooth, Enter commits", key: "P" },
   { id: "wand", icon: "✦", name: "Magic Wand", desc: "Click to select similar colors", key: "Shift+W" },
@@ -4168,6 +4225,18 @@ function OptionsBar(props: {
     </>
   );
 
+  const deselectCtl = (
+    <Tip name="Deselect" desc="Clear the whole selection" keys="Esc / ⌘D" side="bottom">
+      <button
+        style={{ ...small, opacity: props.canRefine ? 1 : 0.45 }}
+        disabled={!props.canRefine}
+        onClick={props.onClearSel}
+      >
+        ✕ Deselect
+      </button>
+    </Tip>
+  );
+
   let content: React.ReactNode = null;
   if (props.tool === "select") {
     content = (
@@ -4181,13 +4250,17 @@ function OptionsBar(props: {
           value={props.semanticText}
           onChange={(e) => props.onSemanticText(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && props.onSemantic()}
-          placeholder="select by text (e.g. all people)"
-          style={{ ...field, width: 180, padding: "3px 6px", fontSize: 11 }}
+          placeholder="select by text (e.g. the red ball)"
+          style={{ ...field, width: 170, padding: "3px 6px", fontSize: 11 }}
         />
         <button style={small} disabled={props.busy} onClick={props.onSemantic}>Find</button>
+        <Tip name="Multi-select" desc="Click = select an object · Ctrl-click adds another · Alt-click removes one · drag = box" side="bottom">
+          <span style={{ color: "#5c6473", cursor: "help" }}>Ctrl adds</span>
+        </Tip>
         <span style={divider} />
         {refineCtl}
         {featherCtl}
+        {deselectCtl}
         {moreCtl}
       </>
     );
@@ -4207,6 +4280,7 @@ function OptionsBar(props: {
         <span style={divider} />
         {refineCtl}
         {featherCtl}
+        {deselectCtl}
         {moreCtl}
       </>
     );

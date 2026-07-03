@@ -26,7 +26,7 @@ export function setTipsDisabled(v: boolean): void {
 /** The full tip map — how every OTHER feature gets introduced at the moment of relevance. */
 const TIPS: Record<string, { target: string; text: string }> = {
   toolrail: { target: "tools", text: "Tools live here — hover any for its shortcut." },
-  "selection-ops": { target: "optionsbar", text: "Shift adds to a selection, Alt subtracts, ⌘D deselects." },
+  "selection-ops": { target: "optionsbar", text: "Ctrl-click adds another object to the selection, Alt-click removes one, Esc/⌘D deselects." },
   lasso: { target: "tools", text: "Long-press the lasso for Freehand / Polygon / Magnetic — Magnetic snaps to edges." },
   brush: { target: "optionsbar", text: "Paint roughly — AI snaps it to the subject. [ and ] resize." },
   pen: { target: "optionsbar", text: "Click = corner, drag = curve, Alt-click toggles smooth, Enter commits." },

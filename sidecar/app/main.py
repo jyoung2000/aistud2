@@ -137,9 +137,7 @@ def select(body: SelectIn) -> dict:
     with _select_lock:
         _selector.set_image(session.rgb, session.image_id)
         if body.semantic:
-            mask, available = _selector.semantic(body.semantic)
-            if not available:
-                note = "semantic select needs Grounding-DINO weights on the target GPU"
+            mask, _available, note = _selector.semantic(body.semantic)
         elif body.subject:
             mask = _selector.select_subject()
         else:

@@ -30,6 +30,7 @@ class SmartSelector:
         self.predictor = None
         self.backend = "fallback"
         self._embedded_for_id: Optional[str] = None
+        self._gdino = None  # GroundingDINO model, lazy-loaded for semantic select
         self._try_load_sam()
 
     # --- SAM 2 (target GPU) ---------------------------------------------------
@@ -138,23 +139,112 @@ class SmartSelector:
         ]
 
     # --- text-grounded (semantic) ---------------------------------------------
-    def semantic(self, text: str):
-        """Grounding-DINO + SAM on the target GPU; honest empty fallback on CPU/no-model.
 
-        Returns (mask, available: bool)."""
+    # rough HSV hue bands (OpenCV hue 0..180) for the color words Find understands offline
+    _COLOR_BANDS = {
+        "red": [(0, 9), (168, 180)], "crimson": [(0, 9), (168, 180)], "scarlet": [(0, 9), (168, 180)],
+        "orange": [(9, 22)], "brown": [(9, 22)], "gold": [(20, 34)], "golden": [(20, 34)],
+        "yellow": [(22, 36)], "green": [(36, 85)], "teal": [(80, 98)], "cyan": [(85, 100)],
+        "blue": [(100, 130)], "navy": [(100, 130)], "purple": [(130, 152)], "violet": [(130, 152)],
+        "magenta": [(150, 168)], "pink": [(150, 172)],
+    }
+    _SUBJECT_WORDS = ("person", "people", "subject", "man", "woman", "boy", "girl",
+                      "human", "figure", "character", "body", "face", "him", "her", "me")
+    _BACKGROUND_WORDS = ("background", "backdrop", "scenery", "behind", "sky", "surroundings")
+
+    def semantic(self, text: str):
+        """Text → mask. Grounding-DINO + SAM when weights are present; otherwise a chain of
+        honest CPU fallbacks: background words → inverse of the detected subject; person/
+        subject words → GrabCut subject; color words → HSV color-band regions.
+
+        Returns (mask, available: bool, note: str|None) — `note` says which method ran so
+        the UI never pretends a heuristic was a grounded model."""
         if self.image is None:
             raise RuntimeError("no image set")
         h, w = self.image.shape[:2]
-        ckpt = os.environ.get("NEUCLIP_GDINO_CHECKPOINT")
-        if ckpt and self.backend == "sam2":  # pragma: no cover
-            try:
-                # Placeholder for the real GroundingDINO->boxes->SAM pipeline.
-                from groundingdino.util.inference import load_model, predict  # type: ignore  # noqa
+        low = text.lower()
 
-                raise NotImplementedError("wire GroundingDINO weights on the target")
+        # 1. grounded pipeline (target GPU with weights): GroundingDINO boxes → SAM masks
+        ckpt = os.environ.get("NEUCLIP_GDINO_CHECKPOINT")
+        cfg = os.environ.get("NEUCLIP_GDINO_CONFIG")
+        if ckpt and cfg and self.backend == "sam2":  # pragma: no cover — GPU-only path
+            try:
+                mask = self._semantic_grounded(text, cfg, ckpt)
+                if mask is not None and mask.any():
+                    return mask, True, None
             except Exception as e:
-                print(f"[semantic] grounded model unavailable: {e}")
-        return np.zeros((h, w), np.uint8), False
+                print(f"[semantic] grounded model unavailable, using heuristics: {e}")
+
+        assert cv2 is not None
+        bgr = cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR)
+
+        # 2. background words → inverse of the detected subject
+        if any(wd in low for wd in self._BACKGROUND_WORDS):
+            subj = self._grabcut(bgr, [w * 0.12, h * 0.06, w * 0.88, h * 0.96], h, w)
+            return (np.where(subj > 0, 0, 255).astype(np.uint8), True,
+                    "matched 'background' as the inverse of the detected subject")
+
+        # 3. person/subject words → subject detection
+        words = set(low.replace(",", " ").split())
+        if words & set(self._SUBJECT_WORDS):
+            subj = self._grabcut(bgr, [w * 0.12, h * 0.06, w * 0.88, h * 0.96], h, w)
+            if subj.any():
+                return subj, True, "matched the main subject (grounded per-object select needs the GPU build)"
+
+        # 4. color words → HSV band regions ("the red ball", "blue jeans")
+        for word, bands in self._COLOR_BANDS.items():
+            if word in words:
+                mask = self._color_mask(bands, h, w)
+                if mask.any():
+                    return mask, True, f"matched {word} regions by color (grounded select needs the GPU build)"
+
+        return (np.zeros((h, w), np.uint8), False,
+                "couldn't match that phrase — offline Find understands colors ('the red ball'), "
+                "'person'/'subject', and 'background'; full text search needs the GPU build")
+
+    def _color_mask(self, bands, h, w) -> np.ndarray:
+        """All sufficiently-saturated pixels inside the hue band(s), cleaned + de-speckled."""
+        hsv = cv2.cvtColor(cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR), cv2.COLOR_BGR2HSV)
+        m = np.zeros((h, w), np.uint8)
+        for lo, hi in bands:
+            m |= cv2.inRange(hsv, (lo, 60, 50), (hi, 255, 255))
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        m = cv2.morphologyEx(cv2.morphologyEx(m, cv2.MORPH_OPEN, k), cv2.MORPH_CLOSE, k)
+        # drop specks: keep components bigger than 0.05% of the frame
+        n, lbl, stats, _ = cv2.connectedComponentsWithStats(m, 8)
+        keep = np.zeros((h, w), np.uint8)
+        for i in range(1, n):
+            if stats[i, cv2.CC_STAT_AREA] >= h * w * 0.0005:
+                keep[lbl == i] = 255
+        return keep
+
+    def _semantic_grounded(self, text: str, cfg: str, ckpt: str):  # pragma: no cover
+        """GroundingDINO boxes for the phrase → SAM mask per box → union. GPU-only."""
+        import torch  # type: ignore
+        from groundingdino.util.inference import load_image, load_model, predict  # type: ignore
+        from PIL import Image as _PIL
+
+        import tempfile
+
+        if self._gdino is None:
+            self._gdino = load_model(cfg, ckpt)
+        # groundingdino's loader wants a path; hand it the current image via a temp file
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            _PIL.fromarray(self.image).save(f.name)
+            _src, img_t = load_image(f.name)
+        boxes, logits, phrases = predict(
+            model=self._gdino, image=img_t, caption=text,
+            box_threshold=0.35, text_threshold=0.25,
+        )
+        if boxes is None or len(boxes) == 0:
+            return None
+        h, w = self.image.shape[:2]
+        union = np.zeros((h, w), np.uint8)
+        for b in boxes:  # cxcywh, normalized
+            cx, cy, bw, bh = [float(v) for v in b]
+            box = [(cx - bw / 2) * w, (cy - bh / 2) * h, (cx + bw / 2) * w, (cy + bh / 2) * h]
+            union = np.maximum(union, self._select_sam([], [], box))
+        return union
 
     # --- classical fallback ---------------------------------------------------
     def _select_fallback(self, points, labels, box) -> np.ndarray:
