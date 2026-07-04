@@ -42,7 +42,17 @@ if errorlevel 1 (
 
 echo Preparing Neuclip Studio (first run only - this installs a few packages)...
 "%VPY%" -m pip install --quiet --upgrade pip
-"%VPY%" -m pip install --quiet -r "%REPO%\sidecar\requirements.txt" pywebview || (echo Dependency install failed. Scroll up for the error. & pause & exit /b 1)
+"%VPY%" -m pip install --quiet -r "%REPO%\sidecar\requirements.txt" pywebview || (
+  echo.
+  echo [X] Package install failed. If you saw "Failed to resolve" / "getaddrinfo failed",
+  echo     a DNS filter or firewall is blocking Python's package servers:
+  echo       - AdGuard Home / Pi-hole: import "adguard-home-allowlist.txt" ^(in this
+  echo         folder^) into its custom filtering rules
+  echo       - VPN/firewall: allow pypi.org and files.pythonhosted.org
+  echo     Fix the connection, then run this again.
+  pause
+  exit /b 1
+)
 
 REM --- GPU: auto-install CUDA PyTorch when an NVIDIA GPU is present -----------
 where nvidia-smi >nul 2>&1

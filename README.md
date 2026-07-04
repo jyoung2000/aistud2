@@ -14,6 +14,25 @@ actual image.
 See [`CLAUDE.md`](./CLAUDE.md) for the full architecture, the seven cross-cutting
 contracts, and per-phase status.
 
+## Quick start (no toolchain needed)
+
+**Easiest — the GUI launcher:** double-click **`Neuclip Studio Launcher.pyw`** in this
+folder (needs only [Python 3.11+](https://www.python.org/downloads/) installed with the
+default options). A setup window with a progress bar installs everything on first run,
+explains any problem in plain language with a **Retry** button, and then opens the app
+in its own native window. `Open Neuclip Studio.bat` / `.command` do the same in a
+console if you prefer.
+
+**Installers:** tagged releases ship a **Windows setup wizard** (Start-menu entry,
+uninstaller, `.neuclip` file association), a **macOS DMG**, and a Linux tarball — no
+Python needed at all. Build them locally with `Build Standalone App.bat` / `.command`
+(the output "Neuclip Studio" folder launches in about a second).
+
+> **Using AdGuard Home / Pi-hole or a strict firewall?** First-run downloads (pip,
+> model weights) and the generation APIs need a few domains unblocked — import
+> [`adguard-home-allowlist.txt`](./adguard-home-allowlist.txt) (in this folder) into
+> AdGuard Home → Filters → Custom filtering rules.
+
 ## Target hardware
 Built for an **NVIDIA RTX 4070 (12 GB), CUDA**. All ML code detects CUDA and falls back
 to CPU, but the SAM 2 / matting / generation paths are designed for the GPU.

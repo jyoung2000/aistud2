@@ -46,7 +46,17 @@ if errorlevel 1 (
 
 echo Installing build tools (first run only)...
 "%VPY%" -m pip install --quiet --upgrade pip
-"%VPY%" -m pip install --quiet -r "%REPO%\sidecar\requirements.txt" pyinstaller pywebview pillow || (echo Install failed. Scroll up for the error. & pause & exit /b 1)
+"%VPY%" -m pip install --quiet -r "%REPO%\sidecar\requirements.txt" pyinstaller pywebview pillow || (
+  echo.
+  echo [X] Package install failed. If you saw "Failed to resolve" / "getaddrinfo failed",
+  echo     a DNS filter or firewall is blocking Python's package servers:
+  echo       - AdGuard Home / Pi-hole: import "adguard-home-allowlist.txt" ^(in this
+  echo         folder^) into its custom filtering rules
+  echo       - VPN/firewall: allow pypi.org and files.pythonhosted.org
+  echo     Fix the connection, then run this again.
+  pause
+  exit /b 1
+)
 
 REM Rebuild the UI if it's missing and Node is available (a built UI ships in the repo).
 if not exist "%REPO%\frontend\dist\index.html" (

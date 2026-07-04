@@ -1,0 +1,62 @@
+! ============================================================================
+! Neuclip Studio — AdGuard Home allowlist
+! ============================================================================
+! HOW TO USE: AdGuard Home → Filters → Custom filtering rules → paste ALL the
+! lines below → Save. `@@||domain^` is an AdGuard *exception* rule: it unblocks
+! that domain and every subdomain, and it wins over blocklists.
+!
+! (Same rules work in AdGuard desktop apps; for Pi-hole use the domains without
+! the @@||…^ wrapper in the Domains → Allowlist screen.)
+!
+! The app itself runs locally (127.0.0.1 — never filtered). These domains are
+! only needed for: installing packages, downloading optional AI model weights,
+! and calling the AI generation APIs you configure.
+! ----------------------------------------------------------------------------
+
+! --- Python package install (pip) — needed by every launcher / build script --
+@@||pypi.org^
+@@||pythonhosted.org^
+! (files.pythonhosted.org is covered by the rule above)
+
+! --- CUDA PyTorch download (GPU setup / GPU build) ---------------------------
+@@||download.pytorch.org^
+@@||pytorch.org^
+
+! --- AI generation APIs (runtime) --------------------------------------------
+! WaveSpeed: model catalog, generation jobs, and result images
+@@||wavespeed.ai^
+! Anthropic: optional prompt-polish (Settings → Anthropic API key)
+@@||anthropic.com^
+
+! --- Optional AI model weights (downloaded once, on demand) ------------------
+! Hugging Face: CLIPSeg (Find-by-text), BiRefNet (edge refine), Qwen assets
+@@||huggingface.co^
+@@||hf.co^
+! Meta: SAM 2 checkpoints
+@@||dl.fbaipublicfiles.com^
+
+! --- GitHub: repo downloads, release builds, some model weights --------------
+@@||github.com^
+@@||githubusercontent.com^
+@@||codeload.github.com^
+
+! --- Dev / from-source launchers only (safe to skip if you use the installer) -
+! npm (frontend build)
+@@||registry.npmjs.org^
+@@||npmjs.org^
+@@||nodejs.org^
+! Rust toolchain (Tauri dev shell)
+@@||rustup.rs^
+@@||static.rust-lang.org^
+@@||crates.io^
+! winget tool installs (Python / Node / Rust via the dev launcher)
+@@||winget.microsoft.com^
+@@||python.org^
+
+! ----------------------------------------------------------------------------
+! If something STILL fails to download: open AdGuard Home → Query Log, find the
+! red (blocked) domain from the same minute, and add your own line for it:
+!   @@||that-domain.tld^
+! Result images from generation APIs can come from provider CDNs that vary by
+! region — the Query Log is the reliable way to catch one we haven't listed.
+! ----------------------------------------------------------------------------
