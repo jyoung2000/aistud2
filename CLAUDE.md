@@ -145,6 +145,29 @@ keep/reroll ──▶ learn (exemplars + telemetry)          structured exemplar
   Goldens are exact strings — intentional phrasing changes mean regenerating and reviewing
   the diff.
 
+## Medium awareness (photo / drawn-animated / 3D-CG — IMPLEMENTED)
+Editing must never cross image mediums: "photorealistic, detailed" inside a cel-shaded
+drawing (or a cartoon patch inside a photo) reads as broken even with a perfect seam.
+- **Detection** (`sidecar/app/medium.py`): CPU statistics classifier, no weights —
+  flat-fill coverage (16 quantized colors), sensor noise in smooth areas, dark ink-line
+  fraction → `photo | drawn | render_cg` + confidence + honest cues. Runs at `/load`
+  (stored on the session, returned to the UI) and inside `build_context` from raw pixels.
+- **Compiler medium lock** (`prompting/compiler.py MEDIUM_STYLE`): a never-dropped
+  `medium` clause pins drawn ("same line weight, flat cel shading … do not make it
+  photorealistic") / CG ("smooth CG shading … not photographic") on instruction-family
+  models; inpaint descriptions get medium-styled suffixes and the photo-quality vocab
+  ("photorealistic, seamless, detailed") is REPLACED by medium-matched quality tags for
+  non-photos. **Exception: `restyle` beats the lock** — "make it watercolor" is a
+  deliberate medium change and must not compile into a contradiction.
+- **Decompose** (`select_sam._decompose_flat`): drawn images skip GrabCut's photo prior —
+  connected flat-color regions become `Object N` layers (interior, 0.5–55% of frame,
+  capped 5) with everything border-touching as Background.
+- **UI**: a chip in the Generate breadcrumb shows the detected medium (📷/✏/🧊 + cues in
+  the tooltip); clicking cycles an override (starred) that rides `/synthesize.medium`;
+  cycling back to the detected value returns to auto. `/load` response carries `medium`.
+- Tests: `tests/test_medium.py` (3-way detection, vocab suppression, style locks,
+  restyle exception, override, flat decompose).
+
 ## Multi-model compare ("shootout")
 Run one edit across 2..N models at once, each prompted from its own research profile, then
 compare and keep the best. **Fairness contract — hold identical across every model in a
@@ -232,11 +255,16 @@ control signal — the **edited** rig, not the raw extraction, becomes the contr
 
 ## Launching / packaging
 - **Easy path — single-file app (DEFAULT consumer artifact):** one self-contained binary
-  that bundles the FastAPI sidecar + the built web UI; on launch it serves the UI and opens
-  the browser. NO Python/Node/Rust/Tauri for the end user, no compile step. Entry:
+  that bundles the FastAPI sidecar + the built web UI; on launch it opens a **native
+  desktop window** via pywebview (WebView2 on Windows / WebKit elsewhere; uvicorn runs on
+  a daemon thread, the window owns the main thread, closing it exits cleanly) and falls
+  back to serving + opening the browser when pywebview is absent/errors
+  (`NEUCLIP_BROWSER=1` forces the browser; `NEUCLIP_NO_BROWSER=1` = headless). NO
+  Python/Node/Rust/Tauri for the end user, no compile step. Entry:
   `sidecar/app/desktop.py` → `main.serve_app()`; UI located via `_ui_dir()` (frozen:
   `sys._MEIPASS/web`, dev: `frontend/dist`) and mounted at `/`. Built by `sidecar/
-  build_app.py` (PyInstaller `--onefile --windowed`, `--add-data dist:web`). CI: `.github/
+  build_app.py` (PyInstaller `--onefile --windowed`, `--add-data dist:web`,
+  `--collect-all webview` when pywebview is installed — CI installs it). CI: `.github/
   workflows/app.yml` builds Win/macOS(arm+intel)/Linux on tag push → draft Release. The
   frontend uses same-origin requests in production (`api/sidecar.ts` `baseUrl()` returns
   "" unless Tauri or vite-dev).
@@ -390,7 +418,13 @@ preview + hint overlay. **Enter** commits (BiRefNet "Refine edges" toggle on by 
 Pure ops esbuild-validated. Sidecar SAM is encode-once/query-many already (`select_sam.set_image`).
 
 ## Keyboard shortcuts (Photoshop-aligned, `canvas/canvasStage.tsx`)
-Tools: **V** Move · **M** Smart-select · **W** Magic Brush (Shift+W ↔ Magic Wand) · **Shift+L**
+**Tool keys are user-remappable** (`state/keymap.ts`: defaults + localStorage overrides;
+single printable keys only — chorded shortcuts stay platform-fixed). The `?` shortcuts
+panel (`panels/help.tsx ShortcutOverlay`) lists everything and rebinds by click-then-press
+(conflicts steal the key and flag the loser as unbound; Reset restores defaults). Tool-rail
+tooltips read the LIVE keymap. Defaults:
+Tools: **V** Move · **M** Smart-select · **P** Pen · **W** Magic Brush (Shift+W ↔ Magic
+Wand) · **L** Lasso / **Shift+L**
 cycle Lasso (free/poly/magnetic) · **H** Hand
 (pan) · Space-drag / middle-drag = temporary pan. Lasso/pen: **Enter**/double-click/click-origin
 close · **Backspace** drop last anchor · **Esc** cancel · **`[` `]`** magnetic Width.
@@ -563,21 +597,28 @@ the visible picture is the composite of base → layers (in array order, bottom�
       dragging** (`boxPreview`, cleared on mouseup). **Esc or the ✕ Deselect button** (in
       the select/wand options rows) = deselect everything, same as ⌘D. macOS Ctrl-click
       context menu is suppressed on the Stage for the select tool.
-      **Find (select-by-text)** `selector.semantic()` returns (mask, available, note):
-      GroundingDINO→SAM boxes-union when `NEUCLIP_GDINO_CHECKPOINT`+`_CONFIG` are set
-      (GPU build), else CPU fallbacks — background words → inverse of subject; person/
-      subject words → GrabCut subject; color words → HSV band regions (largest components)
-      — each labeled honestly via `note`; a no-match keeps the current selection and
-      explains what offline Find understands (`tests/test_semantic_select.py`).
+      **Find (select-by-text)** `selector.semantic()` returns (mask, available, note),
+      tried in order: (1) GroundingDINO→SAM boxes-union when `NEUCLIP_GDINO_CHECKPOINT`
+      +`_CONFIG` are set (GPU build); (2) CLIPSeg text→mask (transformers, CPU or GPU;
+      local HF cache only unless `NEUCLIP_CLIPSEG=1` allows the one-time download);
+      (3) CPU heuristics — background → inverse of subject; person/subject → GrabCut;
+      bright words (sun/moon/lamp) → brightest blob; sky → top-connected bright/blue;
+      skin words → skin-tone rule; color words + noun→color map (grass/water/jeans…) →
+      HSV band regions — each labeled honestly via `note`; a no-match keeps the current
+      selection and explains what offline Find understands (`tests/test_semantic_select.py`).
+      **Esc deselects everything** (pixel + layer selection) from ANY tool unless a
+      lasso/pen/brush gesture is mid-flight (those keep cancel semantics).
 - [x] **Phase 4** — Lasso tools. Sidecar `/livewire/costmap` (Sobel magnitude + Laplacian
       zero-crossing → per-pixel cost, cached per image/contrast, downscaled if huge). Frontend
       `canvas/livewire.ts` (bounded single-source Dijkstra + backtrace, `[`/`]` width),
       `canvas/lasso.ts` (even-odd rasterize, 45° constrain). canvasStage Lasso tool with 3
       modes (Shift+L cycles): freehand (drag samples, release closes), polygonal (click
       anchors, Shift 45°, Backspace, Enter/dbl-click/click-start closes), magnetic live-wire
-      (snaps to edges, preview segment). All commit a closed path via the active boolean op
-      (Shift/Alt) into the shared mask. Cost map + Dijkstra unit-tested (edge cost 14 vs 255;
-      path hugs low-cost corridor).
+      (snaps to edges, preview segment; **PS-parity auto-anchoring** — tracing along the
+      edge freezes the wire's tail into real anchors every ~35 screen px, keeping the
+      bounded Dijkstra window local; Backspace removes them one by one). All commit a
+      closed path via the active boolean op (Shift/Alt) into the shared mask. Cost map +
+      Dijkstra unit-tested (edge cost 14 vs 255; path hugs low-cost corridor).
 - [x] **Phase 5** — Manual editable pen. `canvas/manualPen.ts` (anchors with in/out Bézier
       handles, cubic flatten, anchor/handle/segment hit-tests, bbox) + canvasStage Pen tool:
       click=corner anchor, click-drag=smooth w/ symmetric handles, drag anchors/handles to
@@ -614,7 +655,10 @@ the visible picture is the composite of base → layers (in array order, bottom�
       malicious profile clamped+overridden with warnings. requirements add pyyaml/jsonschema.
 - [x] **Phase 9** — Finish & package. Undo/redo for selection commits + edits (50-deep
       snapshot stack of mask+image+imageId; Cmd/Ctrl+Z / Shift+Z / Ctrl+Y; zoom/pan stay OFF
-      the stack). Export PNG (full) + Cutout (selection as transparent alpha). Packaging:
+      the stack). Export PNG (full) + Cutout (selection as transparent alpha) + **Export
+      as PNG/JPEG/WebP (quality slider) or SVG** (full-quality raster embedded in a
+      scalable vector wrapper — raster edits can't be losslessly auto-vectorized; labeled
+      as such). Packaging:
       `build_app.py` single-file app bundles the UI + the profile `schema.json` data file
       (PyInstaller doesn't collect data files automatically) — frozen app verified serving
       `/`, `/health`, `/models`, `/profiles`, `/synthesize` and the full select→generate

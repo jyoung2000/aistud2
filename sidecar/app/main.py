@@ -116,6 +116,10 @@ async def load_image(file: UploadFile = File(...)) -> dict:
     rgb = imaging.load_rgb(raw)
     image_id = uuid.uuid4().hex
     session = imaging.ImageSession(image_id, rgb)
+    # medium detection (photo / drawn / CG) — steers decompose + the prompt compiler
+    from app.medium import detect_medium
+
+    session.extra["medium"] = detect_medium(rgb)
     imaging.set_active(session)
     with _select_lock:
         _selector.set_image(rgb, image_id)  # SAM encodes once here
@@ -124,6 +128,7 @@ async def load_image(file: UploadFile = File(...)) -> dict:
         "width": session.width,
         "height": session.height,
         "backend": _selector.backend,
+        "medium": session.extra["medium"],
     }
 
 
@@ -855,6 +860,7 @@ class SynthIn(BaseModel):
     strength: str = "normal"            # "strong" = stronger variant (no-change recovery)
     polish: bool = False                # opt-in LLM smoothing (needs an Anthropic key)
     operation: Optional[str] = None     # one-click parse correction from the intent chip
+    medium: Optional[str] = None        # UI override: photo | drawn | render_cg
 
 
 @app.post("/synthesize")
@@ -871,19 +877,27 @@ def synthesize_prompt(body: SynthIn) -> dict:
         warnings = ["dynamic model — generic profile (no hand-tuned adapter)"]
 
     rgb = mask = None
-    if body.id and body.mask_png:
+    medium = body.medium
+    if body.id:
         try:
             session = imaging.require_active(body.id)
-            m = imaging.base64_to_gray(body.mask_png)
-            if m.shape[:2] == (session.height, session.width):
-                rgb, mask = session.rgb, m
+            rgb = session.rgb  # pixels alone still ground the medium + scene stats
+            if not medium:
+                medium = (session.extra.get("medium") or {}).get("medium")
+            if body.mask_png:
+                m = imaging.base64_to_gray(body.mask_png)
+                if m.shape[:2] == (session.height, session.width):
+                    mask = m
+                else:
+                    rgb = None  # stale mask — skip pixel context rather than mis-grounding
         except Exception:
-            pass  # context is a bonus — synthesis proceeds without it
+            rgb = mask = None  # context is a bonus — synthesis proceeds without it
 
     res = profile_synth.synthesize(
         profile, body.intent, body.subject, body.reference_role, loras=body.loras,
         rgb=rgb, mask=mask, selection_label=body.selection_label,
         strength=body.strength, polish=body.polish, operation_override=body.operation,
+        medium=medium,
     )
     return {**res, "warnings": warnings}
 
@@ -956,10 +970,13 @@ def main() -> None:
 
 
 def serve_app() -> None:
-    """All-in-one desktop launcher: serve the bundled UI and open the browser.
+    """All-in-one desktop launcher: serve the bundled UI in a NATIVE window.
 
     This is the entrypoint for the single-file double-click app — no Tauri, no toolchains.
-    """
+    A real desktop window comes from pywebview (WebView2 on Windows, WebKit on macOS/
+    Linux) when it's bundled/installed; the browser tab remains the fallback so the app
+    never fails to open. NEUCLIP_BROWSER=1 forces the browser; NEUCLIP_NO_BROWSER=1
+    suppresses any auto-open (headless/dev)."""
     import threading
     import webbrowser
 
@@ -978,7 +995,31 @@ def serve_app() -> None:
             flush=True,
         )
 
-    if os.environ.get("NEUCLIP_NO_BROWSER") != "1":
+    headless = os.environ.get("NEUCLIP_NO_BROWSER") == "1"
+    force_browser = os.environ.get("NEUCLIP_BROWSER") == "1"
+
+    # --- native window path: uvicorn on a daemon thread, the window owns the main
+    # thread (GUI toolkits require it); closing the window exits the process cleanly.
+    if not headless and not force_browser:
+        try:
+            import webview  # type: ignore  # optional: bundled in the desktop builds
+
+            server = threading.Thread(
+                target=lambda: uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning"),
+                daemon=True,
+            )
+            server.start()
+            webview.create_window(
+                APP_NAME, url, width=1440, height=900, min_size=(1024, 640),
+                background_color="#0d0f12",
+            )
+            webview.start()
+            return  # window closed → daemon server dies with the process
+        except Exception as e:
+            print(f"[{APP_NAME}] native window unavailable ({e}); opening the browser instead.",
+                  file=sys.stderr, flush=True)
+
+    if not headless:
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
 
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

@@ -50,7 +50,7 @@ jobs:
       - name: Build single-file app
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r sidecar/requirements.txt pyinstaller
+          python -m pip install -r sidecar/requirements.txt pyinstaller pywebview
           python sidecar/build_app.py
 
       - name: Package (macOS .app)
@@ -108,7 +108,7 @@ jobs:
       - name: Build GPU app (CUDA torch bundled)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r sidecar/requirements.txt pyinstaller
+          python -m pip install -r sidecar/requirements.txt pyinstaller pywebview
           python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
           python sidecar/build_app.py --gpu
 

@@ -55,6 +55,7 @@ export const FEATURE_INDEX: FeatureEntry[] = [
   { key: "harmonize", name: "Harmonize seam", keywords: ["harmonize", "seam", "color match", "grain"], tourTarget: "generate", blurb: "Color-matches, relights, and grain-matches the edit into its surroundings.", group: "AI" },
   { key: "reroll", name: "Re-roll a layer", keywords: ["reroll", "retry", "seed"], tourTarget: "layers", blurb: "Re-runs a layer's edit with a new seed, in place (↻ on the layer row).", group: "AI" },
   { key: "tuned-prompt", name: "Tuned prompt (prompt intelligence)", keywords: ["tuned", "compiled", "prompt", "rationale", "operation", "intent", "ambiguity"], tourTarget: "tuned-prompt", blurb: "Your intent is compiled into a model-tuned prompt — hover a clause for its sourced reason, correct the parsed operation, or edit the text to send it verbatim.", group: "AI" },
+  { key: "medium", name: "Image medium (photo / drawn / 3D)", keywords: ["medium", "anime", "cartoon", "drawn", "drawing", "photo", "render", "cg", "style lock"], tourTarget: "generate", blurb: "The app detects whether your image is a photo, a drawing/animation, or a CG render — prompts are styled to match and never cross mediums. Click the chip above the prompt to override.", group: "AI" },
   // --- View ---
   { key: "view-modes", name: "A|B & Diff views", keywords: ["before", "after", "swipe", "diff", "compare view"], tourTarget: "viewmodes", blurb: "A|B swipes before/after; Diff highlights exactly which pixels changed.", group: "View" },
   { key: "undo", name: "Undo / redo", keywords: ["undo", "redo", "history"], tourTarget: "filebar", blurb: "50 steps deep; zoom and pan stay off the history.", shortcut: "⌘Z / ⌘⇧Z", group: "View" },
@@ -66,6 +67,7 @@ export const FEATURE_INDEX: FeatureEntry[] = [
   { key: "extend", name: "Extend canvas (outpaint)", keywords: ["extend", "outpaint", "aspect", "expand"], tourTarget: "filebar", blurb: "Grows the canvas to a new aspect ratio and fills the new region generatively.", group: "File" },
   { key: "finish", name: "Finish (upscale + faces)", keywords: ["upscale", "finish", "face", "restore", "2x", "4x"], tourTarget: "filemenu", blurb: "Upscale 2×/4× with optional face restoration on export.", group: "File" },
   { key: "settings", name: "Settings & API keys", keywords: ["settings", "keys", "api", "gpu"], tourTarget: "settings", blurb: "API keys, compute device, the live model list, and the walkthrough live here.", group: "File" },
+  { key: "shortcuts-remap", name: "Keyboard shortcuts (view & remap)", keywords: ["keyboard", "shortcuts", "keybind", "keybinds", "remap", "hotkey", "rebind"], tourTarget: "settings", blurb: "Press ? for the shortcuts panel — click any remappable key to rebind it.", shortcut: "?", group: "File" },
 ];
 
 export function searchFeatures(q: string): FeatureEntry[] {

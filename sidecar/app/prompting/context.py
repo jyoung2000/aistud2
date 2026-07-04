@@ -36,6 +36,10 @@ class SelectionContext:
     scene_brightness: Optional[str] = None  # bright | dim | mid
     scene_temperature: Optional[str] = None # warm | cool | neutral
     scene_saturation: Optional[str] = None  # vivid | muted | mid
+    # medium (photo | drawn | render_cg) — the compiler must never cross mediums
+    medium: Optional[str] = None
+    medium_confidence: Optional[float] = None
+    medium_cue: Optional[str] = None
     # pipeline
     reference_role: Optional[str] = None
     lora_triggers: List[str] = field(default_factory=list)
@@ -53,6 +57,8 @@ class SelectionContext:
             "selection_label": self.selection_label,
             "likely_person": self.likely_person,
             "scene_desc": self.scene_desc,
+            "medium": self.medium,
+            "medium_confidence": self.medium_confidence,
             "reference_role": self.reference_role,
             "lora_triggers": self.lora_triggers,
             "paradigm": self.paradigm,
@@ -82,6 +88,7 @@ def build_context(
     reference_role: Optional[str] = None,
     lora_triggers: Optional[List[str]] = None,
     paradigm: Optional[str] = None,
+    medium: Optional[str] = None,  # explicit override (UI chip) beats detection
 ) -> SelectionContext:
     ctx = SelectionContext(
         selection_label=selection_label,
@@ -89,6 +96,21 @@ def build_context(
         lora_triggers=list(lora_triggers or []),
         paradigm=paradigm,
     )
+    # medium needs only pixels (no mask): detect unless the caller overrode it
+    if medium:
+        ctx.medium = medium
+        ctx.medium_confidence = 1.0
+        ctx.medium_cue = "set by the user"
+    elif rgb is not None:
+        try:
+            from app.medium import detect_medium
+
+            m = detect_medium(rgb)
+            ctx.medium = m["medium"]
+            ctx.medium_confidence = m["confidence"]
+            ctx.medium_cue = (m.get("cues") or [None])[0]
+        except Exception:
+            pass  # medium is a bonus, never a blocker
     if rgb is None or mask is None:
         return ctx
     H, W = mask.shape[:2]

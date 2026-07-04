@@ -60,6 +60,7 @@ export async function synthesizeRemote(body: {
   selection_label?: string;
   strength?: "normal" | "strong";
   operation?: string; // one-click parse correction
+  medium?: "photo" | "drawn" | "render_cg"; // UI override; else the session's detection
 }): Promise<CompiledPrompt> {
   const res = await fetch(`${await baseUrl()}/synthesize`, {
     method: "POST",

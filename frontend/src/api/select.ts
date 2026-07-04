@@ -2,11 +2,19 @@
 // decode to a binary Uint8Array for the shared MaskBuffer and encode back for /refine.
 import { baseUrl } from "./sidecar";
 
+export interface DetectedMedium {
+  medium: "photo" | "drawn" | "render_cg";
+  confidence: number;
+  cues: string[];
+}
+
 export interface LoadResult {
   id: string;
   width: number;
   height: number;
   backend: string; // "sam2" | "fallback"
+  /** Detected image medium — steers decompose + the prompt compiler's style lock. */
+  medium?: DetectedMedium;
 }
 
 export interface SamPoint {

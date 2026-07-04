@@ -96,6 +96,15 @@ def main() -> None:
         "--paths", str(SIDECAR),
     ]
 
+    # pywebview → the app opens in a real native window (WebView2/WebKit) instead of a
+    # browser tab. Optional: without it the browser fallback in serve_app() still works.
+    if _installed("webview"):
+        cmd += ["--collect-all", "webview"]
+        print("  bundling pywebview → native desktop window")
+    else:
+        print("  (pywebview not installed — the app will open in the browser; "
+              "`pip install pywebview` before building for a native window)")
+
     if gpu:
         # CUDA torch is multi-GB. --onedir keeps it a fast-launching folder (an --onefile
         # would re-extract gigabytes to temp on every double-click). Bundle CUDA wholesale.

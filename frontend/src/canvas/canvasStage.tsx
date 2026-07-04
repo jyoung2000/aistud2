@@ -29,6 +29,7 @@ import {
   fetchCostMap,
   decompose,
   type SamPoint,
+  type DetectedMedium,
 } from "../api/select";
 import {
   generate,
@@ -72,6 +73,7 @@ import { toastError, toastSuccess, toast } from "../ui/toast";
 import { emitMilestone } from "../state/milestones";
 import { fireTip } from "../ui/coachmarks";
 import { setViewState, useViewState } from "../state/viewState";
+import { actionForKey, keyFor, useKeymap } from "../state/keymap";
 import { Menu, MenuItem, MenuRow, MenuDivider } from "../ui/menu";
 import { HUE, NEUTRAL, RADII, TYPE, btn, field, divider } from "../ui/tokens";
 import { Tip } from "../ui/tooltip";
@@ -203,6 +205,9 @@ export function CanvasStage() {
   const synthSeq = useRef(0);
   const lastGenMask = useRef<MaskBuffer | null>(null);
   const liveCfg = useGenConfig();
+  // detected image medium (photo/drawn/CG) + the user's override — steers prompt style
+  const [detectedMedium, setDetectedMedium] = useState<DetectedMedium | null>(null);
+  const [mediumOverride, setMediumOverride] = useState<"photo" | "drawn" | "render_cg" | null>(null);
 
   // layer document — `img` is the base (never replaced after open); edits become layers.
   const [layers, setLayers] = useState<DocLayer[]>([]);
@@ -539,8 +544,15 @@ export function CanvasStage() {
         }
         return;
       }
-      if (!mod && (e.key === "h" || e.key === "H")) {
-        setTool("hand"); // H — Hand (pan) tool
+      // Tool switching goes through the user-remappable keymap (state/keymap.ts) —
+      // defaults match Photoshop (V/M/L/P/W/H); the Shortcuts panel rebinds them.
+      const toolAct = !mod && e.key.length === 1 ? actionForKey(e.key) : null;
+      if (toolAct === "tool.hand") {
+        setTool("hand");
+        return;
+      }
+      if (toolAct === "tool.pen") {
+        setTool("pen");
         return;
       }
       // Delete/Backspace deletes the selected layer(s) when any are selected and we're not
@@ -555,35 +567,46 @@ export function CanvasStage() {
         deleteSelected();
         return;
       }
-      if (e.key === "L" && e.shiftKey) {
+      if (toolAct === "tool.lasso") {
         e.preventDefault();
         setTool("lasso");
-        setLassoMode((m) => (m === "free" ? "poly" : m === "poly" ? "magnetic" : "free"));
-        cancelLasso();
+        if (e.shiftKey) {
+          // Shift+<lasso key> cycles Freehand / Polygon / Magnetic
+          setLassoMode((m) => (m === "free" ? "poly" : m === "poly" ? "magnetic" : "free"));
+          cancelLasso();
+        }
         return;
       }
-      if (!mod && !e.shiftKey && (e.key === "l" || e.key === "L")) {
-        setTool("lasso"); // L — lasso (Shift+L cycles its mode)
-        return;
-      }
-      if (!e.metaKey && !e.ctrlKey && (e.key === "v" || e.key === "V")) {
+      if (toolAct === "tool.move") {
         setTool("move");
         return;
       }
-      if (!e.metaKey && !e.ctrlKey && (e.key === "m" || e.key === "M")) {
+      if (toolAct === "tool.select") {
         setTool("select");
         return;
       }
-      if (!e.metaKey && !e.ctrlKey && (e.key === "w" || e.key === "W")) {
-        // W = Magic Brush; Shift+W cycles Magic Wand <-> Magic Brush (PS grouping)
+      if (toolAct === "tool.brush") {
+        // <key> = Magic Brush; Shift+<key> cycles Magic Wand <-> Magic Brush (PS grouping)
         if (e.shiftKey) setTool((cur) => (cur === "wand" ? "magic-brush" : "wand"));
         else setTool("magic-brush");
         return;
       }
+      // Esc = deselect EVERYTHING (pixel selection + layer selection), from any tool —
+      // unless a lasso/pen/brush gesture is mid-flight, where Esc keeps cancel semantics.
+      const deselectAll = () => {
+        if (mask && !mask.isEmpty()) {
+          pushHistory();
+          setMask(new MaskBuffer(mask.width, mask.height));
+        }
+        setSamPoints([]);
+        setSelectedLayerIds([]);
+      };
       if (tool === "move") {
         if ((e.key === "Delete" || e.key === "Backspace") && selectedLayerIds.length) {
           e.preventDefault();
           deleteSelected();
+        } else if (e.key === "Escape") {
+          deselectAll();
         }
         return;
       }
@@ -597,7 +620,8 @@ export function CanvasStage() {
           setLassoPts(np);
           if (lassoMode === "magnetic" && np.length) wire.current?.setSeed(np[np.length - 1]);
         } else if (e.key === "Escape") {
-          cancelLasso();
+          if (lassoPts.length) cancelLasso();
+          else deselectAll();
         } else if ((e.key === "[" || e.key === "]") && wire.current) {
           const w = wire.current;
           w.windowRadius = Math.max(60, Math.min(600, w.windowRadius + (e.key === "]" ? 40 : -40)));
@@ -608,7 +632,8 @@ export function CanvasStage() {
           e.preventDefault();
           void commitBrush();
         } else if (e.key === "Escape") {
-          cancelBrush();
+          if (brushPreview || posHints.current) cancelBrush();
+          else deselectAll();
         } else if (e.key === "[") {
           setBrushSize((s) => Math.max(1, Math.round(s * 0.9)));
         } else if (e.key === "]") {
@@ -624,15 +649,11 @@ export function CanvasStage() {
           setPen({ ...pen, anchors: arr });
           setPenSel(-1);
         } else if (e.key === "Escape") {
-          cancelPen();
+          if (pen.anchors.length) cancelPen();
+          else deselectAll();
         }
-      } else if (e.key === "Escape" && (tool === "select" || tool === "wand")) {
-        // Esc = deselect everything (the marching ants disappear) — same as ⌘D
-        if (mask && !mask.isEmpty()) {
-          pushHistory();
-          setMask(new MaskBuffer(mask.width, mask.height));
-        }
-        setSamPoints([]);
+      } else if (e.key === "Escape") {
+        deselectAll(); // select / wand / hand: Esc always deselects
       }
     };
     window.addEventListener("keydown", onKey);
@@ -727,6 +748,8 @@ export function CanvasStage() {
       .then((r) => {
         setImageId(r.id);
         setBackend(r.backend);
+        setDetectedMedium(r.medium ?? null);
+        setMediumOverride(null);
         // auto-separate subjects/background into editable layers (an editable proposal)
         void runDecompose("simple", r.id);
       })
@@ -1054,7 +1077,29 @@ export function CanvasStage() {
         // linear interpolation so a fast flick doesn't skip a straight jump.
         setLassoPts((pts) => appendFreehand(pts, ip, 1.5 / t.scale));
       } else if (lassoMode === "magnetic" && wire.current && lassoPts.length > 0) {
-        setPreview(wire.current.pathTo(ip) ?? [lassoPts[lassoPts.length - 1], ip]);
+        const seg = wire.current.pathTo(ip) ?? [lassoPts[lassoPts.length - 1], ip];
+        // Photoshop-parity auto-anchoring: as you trace along the edge, the tail of the
+        // live wire freezes into real anchors every ~35 screen px — the seed stays near
+        // the cursor (keeping the bounded Dijkstra window local = snappier + more
+        // accurate) and Backspace still removes the frozen anchors one by one.
+        const AUTO = 35 / t.scale; // constant screen distance at any zoom
+        let len = 0;
+        let cut = -1;
+        for (let i = 1; i < seg.length; i++) {
+          len += Math.hypot(seg[i].x - seg[i - 1].x, seg[i].y - seg[i - 1].y);
+          if (len >= AUTO) {
+            cut = i;
+            break;
+          }
+        }
+        if (cut > 0 && seg.length - cut > 2) {
+          const np = [...lassoPts, ...seg.slice(1, cut + 1)];
+          setLassoPts(np);
+          wire.current.setSeed(np[np.length - 1]);
+          setPreview(wire.current.pathTo(ip) ?? [np[np.length - 1], ip]);
+        } else {
+          setPreview(seg);
+        }
       }
     }
   };
@@ -1613,9 +1658,23 @@ export function CanvasStage() {
     fireTip("save-export");
     c.toBlob((b) => b && void saveFile(b, "neuclip-export.png"), "image/png");
   };
-  const exportAs = (fmt: "png" | "jpeg" | "webp", quality: number) => {
+  const exportAs = (fmt: "png" | "jpeg" | "webp" | "svg", quality: number) => {
     const c = exportCanvas();
     if (!c) return;
+    emitMilestone("save");
+    if (fmt === "svg") {
+      // a raster edit can't be losslessly auto-vectorized — the standard export is an
+      // SVG wrapper embedding the full-quality pixels (scales cleanly, opens in
+      // Illustrator/Figma/browsers as a normal SVG)
+      const href = c.toDataURL("image/png");
+      const svg =
+        `<?xml version="1.0" encoding="UTF-8"?>\n` +
+        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ` +
+        `width="${c.width}" height="${c.height}" viewBox="0 0 ${c.width} ${c.height}">` +
+        `<image width="${c.width}" height="${c.height}" xlink:href="${href}"/></svg>`;
+      void saveFile(new Blob([svg], { type: "image/svg+xml" }), "neuclip-export.svg");
+      return;
+    }
     const ext = fmt === "jpeg" ? "jpg" : fmt;
     c.toBlob(
       (b) => {
@@ -2412,9 +2471,10 @@ export function CanvasStage() {
           intent: prompt,
           reference_role: liveCfg.referencePng ? liveCfg.referenceRole ?? undefined : undefined,
           loras: liveCfg.loras.length ? liveCfg.loras : undefined,
-          id: hasMask ? imageId! : undefined,
+          id: imageId ?? undefined, // pixels ground the medium + scene even without a mask
           mask_png: hasMask ? maskToPngDataUrl(mask!.data, mask!.width, mask!.height) : undefined,
           operation: opOverride ?? undefined,
+          medium: mediumOverride ?? undefined, // detected medium rides the session server-side
         });
         if (seq === synthSeq.current) setCompiled(res);
       } catch {
@@ -2423,7 +2483,7 @@ export function CanvasStage() {
     }, 400);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prompt, synthModelId, liveCfg.referenceRole, liveCfg.referencePng, liveCfg.loras, opOverride]);
+  }, [prompt, synthModelId, liveCfg.referenceRole, liveCfg.referencePng, liveCfg.loras, opOverride, mediumOverride]);
 
   // crop -> model -> feathered composite; result becomes a new ai-edit layer. The inspector's
   // model + reference/pose + LoRAs ride along via the shared genConfig store (reference M3).
@@ -2454,6 +2514,7 @@ export function CanvasStage() {
             id: imageId,
             mask_png: maskPng,
             operation: opOverride ?? undefined,
+            medium: mediumOverride ?? undefined,
             strength: "strong",
           });
           sendPrompt = strong.prompt;
@@ -3218,6 +3279,9 @@ export function CanvasStage() {
         onOpOverride={setOpOverride}
         lowChange={lowChange}
         onStronger={() => void generateNow({ strong: true })}
+        detectedMedium={detectedMedium}
+        mediumOverride={mediumOverride}
+        onMediumOverride={setMediumOverride}
         hasSelection={!!mask && !mask.isEmpty()}
         status={genStatus}
         canGenerate={!!imageId && !!mask && !mask.isEmpty() && genStatus !== "busy" && genStatus !== "polling"}
@@ -3283,6 +3347,9 @@ function GenerateBar({
   onOpOverride,
   lowChange,
   onStronger,
+  detectedMedium,
+  mediumOverride,
+  onMediumOverride,
   hasSelection,
   status,
   canGenerate,
@@ -3313,6 +3380,9 @@ function GenerateBar({
   onOpOverride: (op: string | null) => void;
   lowChange: boolean;
   onStronger: () => void;
+  detectedMedium: DetectedMedium | null;
+  mediumOverride: "photo" | "drawn" | "render_cg" | null;
+  onMediumOverride: (m: "photo" | "drawn" | "render_cg" | null) => void;
   hasSelection: boolean;
   status: "idle" | "busy" | "polling" | "done" | "failed";
   canGenerate: boolean;
@@ -3400,6 +3470,35 @@ function GenerateBar({
           <span style={{ color: A }}>· {cfg.referenceRole} reference{cfg.referenceRole === "pose" ? ` (${Math.round(cfg.controlStrength * 100)}%)` : ""}</span>
         )}
         {cfg.loras.length > 0 && <span style={{ color: A }}>· {cfg.loras.length} LoRA</span>}
+        {(detectedMedium || mediumOverride) && (() => {
+          // detected image medium — the compiler styles prompts to it; click to override
+          const MEDIA = [
+            { id: "photo" as const, label: "📷 photo" },
+            { id: "drawn" as const, label: "✏ drawn" },
+            { id: "render_cg" as const, label: "🧊 3D/CG" },
+          ];
+          const active = mediumOverride ?? detectedMedium!.medium;
+          const cur = MEDIA.findIndex((m) => m.id === active);
+          const next = () => {
+            const n = MEDIA[(cur + 1) % MEDIA.length].id;
+            // cycling back to the detected value returns to auto
+            onMediumOverride(n === detectedMedium?.medium ? null : n);
+          };
+          return (
+            <button
+              onClick={next}
+              title={
+                (mediumOverride
+                  ? `Medium set by you — prompts are styled for ${active}`
+                  : `Detected: ${active} (${Math.round((detectedMedium?.confidence ?? 0) * 100)}% — ${detectedMedium?.cues?.[0] ?? "image statistics"})`) +
+                ". Prompts never cross mediums (no photorealism in a drawing). Click to change."
+              }
+              style={{ border: `1px solid ${A}44`, background: "transparent", color: A, borderRadius: 9, padding: "0 7px", fontSize: 10, cursor: "pointer" }}
+            >
+              {MEDIA[cur]?.label ?? active}{mediumOverride ? "*" : ""}
+            </button>
+          );
+        })()}
       </div>
       {overlapsImport && (
         <div
@@ -3718,7 +3817,7 @@ function FileBar({
   decomposing: boolean;
   onDecompose: (g: "simple" | "fine") => void;
   onExport: () => void;
-  onExportAs: (fmt: "png" | "jpeg" | "webp", quality: number) => void;
+  onExportAs: (fmt: "png" | "jpeg" | "webp" | "svg", quality: number) => void;
   onExportCutout: () => void;
   canExportCutout: boolean;
 }) {
@@ -3726,7 +3825,7 @@ function FileBar({
   const importRef = useRef<HTMLInputElement>(null);
   const openRef = useRef<HTMLInputElement>(null);
   const [finishFace, setFinishFace] = useState(false);
-  const [exportFmt, setExportFmt] = useState<"png" | "jpeg" | "webp">("png");
+  const [exportFmt, setExportFmt] = useState<"png" | "jpeg" | "webp" | "svg">("png");
   const [exportQuality, setExportQuality] = useState(0.92);
   const ASPECTS: [string, number | null][] = [
     ["Free", null],
@@ -3800,14 +3899,16 @@ function FileBar({
         <MenuRow label="Export as">
           <select
             value={exportFmt}
-            onChange={(e) => setExportFmt(e.target.value as "png" | "jpeg" | "webp")}
+            onChange={(e) => setExportFmt(e.target.value as "png" | "jpeg" | "webp" | "svg")}
+            title={exportFmt === "svg" ? "SVG wraps the full-quality pixels in a scalable vector container" : undefined}
             style={{ background: "#181c22", color: "#cbd5e1", border: "1px solid #2a2f37", borderRadius: 5, padding: "2px 4px", fontSize: 11 }}
           >
             <option value="png">PNG</option>
             <option value="jpeg">JPEG</option>
             <option value="webp">WebP</option>
+            <option value="svg">SVG</option>
           </select>
-          {exportFmt !== "png" && (
+          {exportFmt !== "png" && exportFmt !== "svg" && (
             <>
               <input
                 type="range"
@@ -3983,6 +4084,16 @@ function ToolRail({
 }) {
   const [flyout, setFlyout] = useState(false);
   const press = useRef(0);
+  useKeymap(); // tooltips show the LIVE (possibly remapped) keys
+  const liveKey = (id: Tool): string => {
+    const act =
+      id === "move" ? "tool.move" : id === "select" ? "tool.select" : id === "lasso" ? "tool.lasso"
+      : id === "pen" ? "tool.pen" : id === "hand" ? "tool.hand" : "tool.brush";
+    const k = (keyFor(act) || "?").toUpperCase();
+    if (id === "wand") return `Shift+${k}`;
+    if (id === "lasso") return `${k} · Shift+${k} cycles`;
+    return k;
+  };
   const railBtn = (active: boolean): React.CSSProperties => ({
     width: 32,
     height: 30,
@@ -4013,7 +4124,7 @@ function ToolRail({
     >
       {TOOL_DEFS.map((d) => (
         <span key={d.id} style={{ position: "relative" }}>
-          <Tip name={d.name} desc={d.desc} keys={d.key} side="right">
+          <Tip name={d.name} desc={d.desc} keys={liveKey(d.id)} side="right">
             <button
               style={railBtn(tool === d.id)}
               onClick={() => {
@@ -4292,7 +4403,11 @@ function OptionsBar(props: {
             {m.label}
           </button>
         ))}
-        <span style={{ color: "#5c6473" }}>Enter/double-click closes · Esc cancels · Shift adds, Alt subtracts</span>
+        <span style={{ color: "#5c6473" }}>
+          {props.lassoMode === "magnetic"
+            ? "Click an edge, then trace along it — anchors drop automatically · Backspace removes · Enter closes"
+            : "Enter/double-click closes · Esc cancels · Shift adds, Alt subtracts"}
+        </span>
         <span style={divider} />
         {refineCtl}
         {featherCtl}
@@ -4362,8 +4477,11 @@ function OptionsBar(props: {
 // --- empty state (redesign A2): a drop-zone card that teaches --------------------------
 function EmptyState({ onOpen, onSample }: { onOpen: (f: File) => void; onSample: () => void }) {
   const ref = useRef<HTMLInputElement>(null);
+  const openKey = /mac/i.test(navigator.platform) ? "⌘O" : "Ctrl+O";
   return (
-    <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center" }}>
+    // zIndex lifts the card above the Konva Stage canvas (a later sibling) — without it
+    // the transparent canvas swallows every click and "Open image" silently does nothing
+    <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", zIndex: 5 }}>
       <div
         style={{
           display: "flex",
@@ -4392,7 +4510,7 @@ function EmptyState({ onOpen, onSample }: { onOpen: (f: File) => void; onSample:
           onClick={() => ref.current?.click()}
           style={{ ...btn, borderColor: HUE.file, color: HUE.file, padding: "7px 18px", fontSize: 13 }}
         >
-          or Open image (⌘O)
+          or Open image ({openKey})
         </button>
         <button
           onClick={onSample}

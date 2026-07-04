@@ -46,6 +46,7 @@ def synthesize(
     strength: str = "normal",
     polish: bool = False,
     operation_override: Optional[str] = None,
+    medium: Optional[str] = None,
 ) -> dict:
     """intent (+ optional pixels/mask for context grounding) → tuned prompt package.
 
@@ -72,6 +73,7 @@ def synthesize(
         reference_role=reference_role,
         lora_triggers=_lora_triggers(loras),
         paradigm=profile.get("paradigm"),
+        medium=medium,
     )
 
     result = compile_prompt(spec, ctx, profile, strength=strength)

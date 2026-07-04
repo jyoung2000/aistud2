@@ -130,6 +130,19 @@ class SmartSelector:
                 print(f"[decompose] grounded model unavailable, fallback: {e}")
 
         assert cv2 is not None
+
+        # drawn/animated images: GrabCut's photo-statistics prior misjudges flat cel
+        # shading — segment the actual flat color regions into layers instead
+        try:
+            from app.medium import detect_medium
+
+            if detect_medium(self.image)["medium"] == "drawn":
+                regions = self._decompose_flat(h, w)
+                if regions:
+                    return regions
+        except Exception as e:
+            print(f"[decompose] flat-region path failed, using GrabCut: {e}")
+
         bgr = cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR)
         subj = self._grabcut(bgr, [w * 0.12, h * 0.06, w * 0.88, h * 0.96], h, w)
         bg = np.where(subj > 0, 0, 255).astype(np.uint8)
@@ -137,6 +150,44 @@ class SmartSelector:
             {"name": "Background", "kind": "decomposed", "mask": bg},
             {"name": "Subject 1", "kind": "decomposed", "mask": subj},
         ]
+
+    def _decompose_flat(self, h, w) -> list:
+        """Layering for drawn/animated images: connected flat-color regions become
+        object layers (largest first, capped at 5); everything border-touching or small
+        stays Background. Honest proposal — the panel labels it as an estimate."""
+        q = (self.image >> 4).astype(np.uint16)  # 16 levels per channel
+        packed = ((q[..., 0] << 8) | (q[..., 1] << 4) | q[..., 2]).astype(np.int32)
+        # merge nearly-identical quantized colors via a small blur on the labels? keep
+        # simple: exact quantized-color components
+        objs: list = []
+        bg = np.full((h, w), 255, np.uint8)
+        seen = 0
+        for color in np.unique(packed):
+            cm = (packed == color).astype(np.uint8)
+            if cm.sum() < h * w * 0.005:
+                continue
+            n, lbl, stats, _ = cv2.connectedComponentsWithStats(cm, 8)
+            for i in range(1, n):
+                area = stats[i, cv2.CC_STAT_AREA]
+                if area < h * w * 0.005 or area > h * w * 0.55:
+                    continue
+                x0, y0 = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP]
+                x1 = x0 + stats[i, cv2.CC_STAT_WIDTH]
+                y1 = y0 + stats[i, cv2.CC_STAT_HEIGHT]
+                if x0 <= 1 or y0 <= 1 or x1 >= w - 1 or y1 >= h - 1:
+                    continue  # border-touching flats are backdrop, not objects
+                m = np.where(lbl == i, 255, 0).astype(np.uint8)
+                m = cv2.morphologyEx(m, cv2.MORPH_CLOSE,
+                                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+                objs.append({"area": int(area), "mask": m})
+        if not objs:
+            return []
+        objs.sort(key=lambda o: -o["area"])
+        out = []
+        for idx, o in enumerate(objs[:5]):
+            bg[o["mask"] > 0] = 0
+            out.append({"name": f"Object {idx + 1}", "kind": "decomposed", "mask": o["mask"]})
+        return [{"name": "Background", "kind": "decomposed", "mask": bg}] + out
 
     # --- text-grounded (semantic) ---------------------------------------------
 
@@ -149,8 +200,18 @@ class SmartSelector:
         "magenta": [(150, 168)], "pink": [(150, 172)],
     }
     _SUBJECT_WORDS = ("person", "people", "subject", "man", "woman", "boy", "girl",
-                      "human", "figure", "character", "body", "face", "him", "her", "me")
-    _BACKGROUND_WORDS = ("background", "backdrop", "scenery", "behind", "sky", "surroundings")
+                      "human", "figure", "character", "body", "him", "her", "me")
+    _BACKGROUND_WORDS = ("background", "backdrop", "scenery", "behind", "surroundings")
+    # common scene nouns Find can resolve offline via color/brightness heuristics
+    _NOUN_COLORS = {
+        "grass": "green", "tree": "green", "trees": "green", "plant": "green",
+        "plants": "green", "leaves": "green", "forest": "green", "bush": "green",
+        "water": "blue", "sea": "blue", "ocean": "blue", "lake": "blue", "river": "blue",
+        "jeans": "blue", "denim": "blue", "blood": "red", "fire": "orange",
+        "flame": "orange", "banana": "yellow", "lemon": "yellow",
+    }
+    _BRIGHT_WORDS = ("sun", "moon", "light", "lamp", "bulb", "glow", "headlight")
+    _SKIN_WORDS = ("skin", "face", "hand", "hands", "arm", "arms", "leg", "legs")
 
     def semantic(self, text: str):
         """Text → mask. Grounding-DINO + SAM when weights are present; otherwise a chain of
@@ -175,32 +236,134 @@ class SmartSelector:
             except Exception as e:
                 print(f"[semantic] grounded model unavailable, using heuristics: {e}")
 
+        # 2. CLIPSeg text→mask (transformers; CPU or GPU) — arbitrary phrases work when the
+        #    model is cached / bundled. Never auto-downloads unless NEUCLIP_CLIPSEG=1.
+        try:
+            mask = self._semantic_clipseg(text)
+            if mask is not None and mask.any():
+                return mask, True, "matched by CLIPSeg text-to-mask"
+        except Exception as e:
+            print(f"[semantic] CLIPSeg unavailable: {e}")
+
         assert cv2 is not None
         bgr = cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR)
+        words = set(low.replace(",", " ").replace("'s", "").split())
 
-        # 2. background words → inverse of the detected subject
+        # 3. background words → inverse of the detected subject
         if any(wd in low for wd in self._BACKGROUND_WORDS):
             subj = self._grabcut(bgr, [w * 0.12, h * 0.06, w * 0.88, h * 0.96], h, w)
             return (np.where(subj > 0, 0, 255).astype(np.uint8), True,
                     "matched 'background' as the inverse of the detected subject")
 
-        # 3. person/subject words → subject detection
-        words = set(low.replace(",", " ").split())
+        # 4. person/subject words → subject detection
         if words & set(self._SUBJECT_WORDS):
             subj = self._grabcut(bgr, [w * 0.12, h * 0.06, w * 0.88, h * 0.96], h, w)
             if subj.any():
                 return subj, True, "matched the main subject (grounded per-object select needs the GPU build)"
 
-        # 4. color words → HSV band regions ("the red ball", "blue jeans")
-        for word, bands in self._COLOR_BANDS.items():
-            if word in words:
-                mask = self._color_mask(bands, h, w)
-                if mask.any():
-                    return mask, True, f"matched {word} regions by color (grounded select needs the GPU build)"
+        # 5. bright-source words → the brightest compact blob ("the sun", "the lamp")
+        if words & set(self._BRIGHT_WORDS):
+            mask = self._brightest_blob(h, w)
+            if mask.any():
+                return mask, True, "matched the brightest region (sun/light heuristic)"
+
+        # 6. sky → bright/blue area connected to the top edge
+        if "sky" in words:
+            mask = self._sky_mask(h, w)
+            if mask.any():
+                return mask, True, "matched the sky (top-connected bright/blue region)"
+
+        # 7. skin words → skin-tone regions
+        if words & set(self._SKIN_WORDS):
+            mask = self._skin_mask(h, w)
+            if mask.any():
+                return mask, True, "matched skin-tone regions"
+
+        # 8. color words + common nouns with a known color ("grass", "jeans", "water")
+        color_words = [wd for wd in words if wd in self._COLOR_BANDS]
+        color_words += [self._NOUN_COLORS[wd] for wd in words if wd in self._NOUN_COLORS]
+        for word in color_words:
+            mask = self._color_mask(self._COLOR_BANDS[word], h, w)
+            if mask.any():
+                return mask, True, f"matched {word} regions by color (grounded select needs the GPU build)"
 
         return (np.zeros((h, w), np.uint8), False,
                 "couldn't match that phrase — offline Find understands colors ('the red ball'), "
-                "'person'/'subject', and 'background'; full text search needs the GPU build")
+                "scene words ('sun', 'sky', 'grass', 'water', 'skin'), 'person'/'subject', and "
+                "'background'; arbitrary phrases need the GPU build (or a cached CLIPSeg model)")
+
+    def _semantic_clipseg(self, text: str):
+        """CLIPSeg text→mask (CIDAS/clipseg-rd64-refined). Uses the local HF cache only,
+        unless NEUCLIP_CLIPSEG=1 explicitly allows the one-time download — Find must never
+        surprise the user with a 600 MB fetch."""
+        if os.environ.get("NEUCLIP_CLIPSEG") == "0":
+            return None
+        import torch  # type: ignore
+        from transformers import CLIPSegForImageSegmentation, CLIPSegProcessor  # type: ignore
+
+        if getattr(self, "_clipseg", None) is None:
+            name = os.environ.get("NEUCLIP_CLIPSEG_MODEL", "CIDAS/clipseg-rd64-refined")
+            local_only = os.environ.get("NEUCLIP_CLIPSEG") != "1"
+            proc = CLIPSegProcessor.from_pretrained(name, local_files_only=local_only)
+            model = CLIPSegForImageSegmentation.from_pretrained(name, local_files_only=local_only)
+            device = detect_device()["device"]
+            model = model.to(device).eval()
+            self._clipseg = (proc, model, device)
+        proc, model, device = self._clipseg
+        from PIL import Image as _PIL
+
+        h, w = self.image.shape[:2]
+        pil = _PIL.fromarray(self.image)
+        inputs = proc(text=[text], images=[pil], return_tensors="pt").to(device)
+        with torch.inference_mode():
+            logits = model(**inputs).logits  # (352, 352)
+        prob = torch.sigmoid(logits).squeeze().float().cpu().numpy()
+        mask = (prob > 0.4).astype(np.uint8) * 255
+        if not mask.any():
+            return None
+        assert cv2 is not None
+        return cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+
+    def _brightest_blob(self, h, w) -> np.ndarray:
+        """Largest connected component of the top-brightness pixels (sun / lamp / moon)."""
+        gray = cv2.cvtColor(cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR), cv2.COLOR_BGR2GRAY)
+        thresh = np.percentile(gray, 98)
+        m = (gray >= max(200, thresh)).astype(np.uint8) * 255
+        if not m.any():
+            m = (gray >= thresh).astype(np.uint8) * 255
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k)
+        n, lbl, stats, _ = cv2.connectedComponentsWithStats(m, 8)
+        if n <= 1:
+            return np.zeros((h, w), np.uint8)
+        best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        return np.where(lbl == best, 255, 0).astype(np.uint8)
+
+    def _sky_mask(self, h, w) -> np.ndarray:
+        """Bright and/or blue smooth region connected to the top edge of the frame."""
+        hsv = cv2.cvtColor(cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR), cv2.COLOR_BGR2HSV)
+        blue = cv2.inRange(hsv, (95, 25, 90), (135, 255, 255))
+        bright = cv2.inRange(hsv, (0, 0, 185), (180, 60, 255))  # pale / overcast sky
+        m = cv2.morphologyEx(blue | bright, cv2.MORPH_CLOSE,
+                             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+        n, lbl = cv2.connectedComponents(m, 8)
+        keep = np.zeros((h, w), np.uint8)
+        top = set(int(v) for v in np.unique(lbl[0, :]) if v != 0)  # touching the top edge
+        for i in top:
+            keep[lbl == i] = 255
+        return keep
+
+    def _skin_mask(self, h, w) -> np.ndarray:
+        """Skin-tone pixels (Peer et al. RGB rule — same heuristic the prompt context uses)."""
+        px = self.image.astype(np.int16)
+        r, g, b = px[..., 0], px[..., 1], px[..., 2]
+        skin = (
+            (r > 95) & (g > 40) & (b > 20)
+            & ((px.max(axis=-1) - px.min(axis=-1)) > 15)
+            & (np.abs(r - g) > 15) & (r > g) & (r > b)
+        ).astype(np.uint8) * 255
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        return cv2.morphologyEx(skin, cv2.MORPH_OPEN, k)
 
     def _color_mask(self, bands, h, w) -> np.ndarray:
         """All sufficiently-saturated pixels inside the hue band(s), cleaned + de-speckled."""

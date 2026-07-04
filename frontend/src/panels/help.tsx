@@ -6,6 +6,7 @@ import { Menu, MenuItem } from "../ui/menu";
 import { FEATURE_INDEX, searchFeatures, type FeatureEntry } from "../ui/featureIndex";
 import { spotlight } from "../ui/spotlight";
 import { startTutorial } from "../state/tutorial";
+import { FIXED_BINDS, REMAPPABLE, keyFor, resetKeymap, setKeyFor, useKeymap } from "../state/keymap";
 
 export function HelpMenu({ onShowTour }: { onShowTour: () => void }) {
   const [finder, setFinder] = useState(false);
@@ -141,11 +142,38 @@ function FeatureFinder({ onClose }: { onClose: () => void }) {
 const GROUPS: FeatureEntry["group"][] = ["Tools", "Selection", "Layers", "AI", "View", "File"];
 
 function ShortcutOverlay({ onClose }: { onClose: () => void }) {
+  useKeymap(); // live re-render on remaps
+  // which action is waiting for its new key ("press a key…")
+  const [capturing, setCapturing] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    const onKey = (e: KeyboardEvent) => {
+      if (capturing) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === "Escape") {
+          setCapturing(null);
+          return;
+        }
+        // single printable characters only — chords stay platform-fixed
+        if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey && e.key !== " ") {
+          const stolen = setKeyFor(capturing, e.key);
+          const label = REMAPPABLE.find((a) => a.id === capturing)?.label;
+          setNote(
+            stolen
+              ? `${e.key.toUpperCase()} → ${label} (taken from ${REMAPPABLE.find((a) => a.id === stolen)?.label} — rebind it below)`
+              : `${e.key.toUpperCase()} → ${label}`
+          );
+          setCapturing(null);
+        }
+        return;
+      }
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey, true); // capture phase beats app shortcuts
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onClose, capturing]);
   return (
     <div
       onClick={onClose}
@@ -164,9 +192,74 @@ function ShortcutOverlay({ onClose }: { onClose: () => void }) {
         style={{ width: 860, maxWidth: "94vw", maxHeight: "86vh", overflowY: "auto", background: "#12151a", border: "1px solid #2f3540", borderRadius: 14, padding: 22 }}
       >
         <div style={{ display: "flex", alignItems: "center", marginBottom: 14 }}>
-          <b style={{ fontSize: 16, color: "#e2e8f0" }}>Keyboard shortcuts & features</b>
-          <span style={{ marginLeft: 10, color: "#5c6473", fontSize: 11 }}>generated from the feature index — press Esc to close</span>
+          <b style={{ fontSize: 16, color: "#e2e8f0" }}>Keyboard shortcuts</b>
+          <span style={{ marginLeft: 10, color: "#5c6473", fontSize: 11 }}>click a key to rebind it — press Esc to close</span>
           <button onClick={onClose} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "#8b94a3", cursor: "pointer", fontSize: 15 }}>✕</button>
+        </div>
+
+        {/* --- remappable keys --- */}
+        <div style={{ border: "1px solid #262c36", borderRadius: 10, padding: "12px 14px", marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 10.5, letterSpacing: 1, color: "#64748b", fontWeight: 700 }}>REMAPPABLE KEYS</span>
+            {note && <span style={{ marginLeft: 10, fontSize: 11, color: "#38bdf8" }}>{note}</span>}
+            <button
+              onClick={() => {
+                resetKeymap();
+                setNote("defaults restored");
+              }}
+              style={{ marginLeft: "auto", border: "1px solid #2a2f37", background: "transparent", color: "#8b94a3", borderRadius: 6, padding: "2px 10px", fontSize: 11, cursor: "pointer" }}
+            >
+              Reset to defaults
+            </button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "4px 18px" }}>
+            {REMAPPABLE.map((a) => {
+              const k = keyFor(a.id);
+              const isCapturing = capturing === a.id;
+              return (
+                <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", color: "#c8d0dc" }}>
+                  <span style={{ flex: 1 }}>
+                    {a.label}
+                    {a.note && <span style={{ color: "#5c6473", fontSize: 10.5 }}> — {a.note}</span>}
+                  </span>
+                  <button
+                    onClick={() => {
+                      setNote(null);
+                      setCapturing(isCapturing ? null : a.id);
+                    }}
+                    title="Click, then press the new key (Esc cancels)"
+                    style={{
+                      minWidth: 34,
+                      fontSize: 11,
+                      color: isCapturing ? "#0b1116" : k ? "#cfe6ff" : "#f2c078",
+                      background: isCapturing ? "#38bdf8" : "#181d24",
+                      border: `1px solid ${isCapturing ? "#38bdf8" : "#333a45"}`,
+                      borderRadius: 5,
+                      padding: "2px 8px",
+                      cursor: "pointer",
+                      fontWeight: 700,
+                    }}
+                  >
+                    {isCapturing ? "press a key…" : k ? k.toUpperCase() : "unbound"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* --- fixed shortcuts (platform conventions; not remappable) --- */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: "2px 18px", marginBottom: 18 }}>
+          {FIXED_BINDS.map((b, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "3px 0", color: "#c8d0dc" }}>
+              <span style={{ flex: 1 }}>{b.label}</span>
+              <span style={{ fontSize: 10.5, color: "#8fa0b5", border: "1px solid #333a45", borderRadius: 4, padding: "0 5px", whiteSpace: "nowrap" }}>{b.keys}</span>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 10.5, letterSpacing: 1, color: "#64748b", fontWeight: 700, margin: "4px 0 8px" }}>
+          EVERYTHING ELSE — ⌘K FINDS ANY FEATURE
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 18 }}>
           {GROUPS.map((g) => (

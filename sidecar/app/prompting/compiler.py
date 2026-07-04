@@ -30,7 +30,29 @@ from app.prompting.intent import EditSpec
 # Clause kinds, in DROP priority order when over the token budget (leftmost dropped
 # first). "change" and "preservation" are never dropped; LoRA triggers are load-bearing.
 DROP_ORDER = ["quality", "vocab", "scene", "position", "context"]
-NEVER_DROP = {"change", "preservation", "reference", "lora", "mitigation"}
+NEVER_DROP = {"change", "preservation", "reference", "lora", "mitigation", "medium"}
+
+# Medium-locked style language. Crossing mediums is the #1 way an edit sticks out —
+# "photorealistic, detailed" inside a cel-shaded drawing (or a cartoon patch inside a
+# photograph) reads as broken even when the seam is perfect. The compiler therefore
+# (a) never emits photo-quality vocab into a non-photo image and (b) pins the medium
+# with a load-bearing clause when the image is drawn or CG.
+MEDIUM_STYLE = {
+    "drawn": {
+        "instruction": "Match the original hand-drawn / animated style exactly — same "
+                       "line weight, flat cel shading, and palette; do not make it photorealistic",
+        "inpaint": "in the same flat, cel-shaded illustration style as the surrounding "
+                   "artwork, clean line art, matching palette",
+        "quality": ["clean line art", "flat colors", "consistent illustration style"],
+    },
+    "render_cg": {
+        "instruction": "Match the original 3D-rendered look — smooth CG shading and "
+                       "materials; do not make it photographic or hand-drawn",
+        "inpaint": "in the same smooth 3D-rendered style as the surrounding image, "
+                   "matching CG materials and lighting",
+        "quality": ["high-quality 3D render", "smooth shading", "consistent CG style"],
+    },
+}
 
 
 def _tokens(text: str) -> int:
@@ -225,17 +247,35 @@ def compile_prompt(
                     else "Preserve the person's identity",
                     "mitigation", f"identity-drift failure pattern: {f.get('pattern')}"))
 
+    # ---- medium lock (never dropped): drawn/CG images pin their style ----
+    # EXCEPT for restyle — a deliberate "make it watercolor" beats the lock; the user is
+    # asking to change the medium, and fighting them would compile a contradiction.
+    med = MEDIUM_STYLE.get(ctx.medium or "") if spec.operation != "restyle" else None
+    med_reason = (
+        f"the image is {ctx.medium}: {ctx.medium_cue or 'medium detected from image statistics'} "
+        f"— an edit must stay in the original medium"
+    )
+    if med and paradigm != "inpaint":
+        clauses.append(_clause(med["instruction"], "medium", med_reason))
+        rationale.append(f"medium lock ({ctx.medium}): style clause pinned, photo vocab suppressed")
+
     # ---- scene/context clauses ----
     if paradigm == "inpaint":
+        if med:
+            clauses.append(_clause(med["inpaint"], "medium", med_reason))
+            rationale.append(f"medium lock ({ctx.medium}): description styled to the medium")
         if ctx.scene_desc and spec.operation != "remove":  # remove already embeds it
             clauses.append(_clause(
                 f"matching the surrounding {ctx.scene_desc}",
                 "scene", "scene-matching descriptors from the image's own LAB statistics"))
         vocab = profile.get("vocab", {}) or {}
-        quality = (vocab.get("quality") or [])[:3]
+        # photo-quality tags ("photorealistic, detailed") only belong in photographs —
+        # a non-photo medium swaps in its own quality vocabulary
+        quality = (med["quality"] if med else (vocab.get("quality") or []))[:3]
         if quality:
             clauses.append(_clause(", ".join(quality), "quality",
-                                   "model-preferred quality tags (research layer vocab)"))
+                                   "medium-matched quality tags" if med
+                                   else "model-preferred quality tags (research layer vocab)"))
     else:
         if spec.operation in ("replace", "add", "background_swap") and ctx.scene_desc:
             clauses.append(_clause(
