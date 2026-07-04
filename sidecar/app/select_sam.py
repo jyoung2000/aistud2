@@ -132,7 +132,7 @@ class SmartSelector:
         assert cv2 is not None
 
         # drawn/animated images: GrabCut's photo-statistics prior misjudges flat cel
-        # shading — segment the actual flat color regions into layers instead
+        # shading — group the actual flat color regions into whole INSTANCES instead
         try:
             from app.medium import detect_medium
 
@@ -146,47 +146,109 @@ class SmartSelector:
         bgr = cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR)
         subj = self._grabcut(bgr, [w * 0.12, h * 0.06, w * 0.88, h * 0.96], h, w)
         bg = np.where(subj > 0, 0, 255).astype(np.uint8)
+        # honest labeling: a skin-bearing foreground is a Subject, anything else an Object
+        name = "Subject 1" if self._region_skin_frac(subj) > 0.10 else "Object 1"
         return [
             {"name": "Background", "kind": "decomposed", "mask": bg},
-            {"name": "Subject 1", "kind": "decomposed", "mask": subj},
+            {"name": name, "kind": "decomposed", "mask": subj},
         ]
 
+    def _region_skin_frac(self, mask: np.ndarray) -> float:
+        """Skin-tone fraction inside a mask (Peer et al. RGB rule) — Subject vs Object."""
+        sel = mask > 0
+        if not sel.any():
+            return 0.0
+        px = self.image[sel].astype(np.int16)
+        r, g, b = px[:, 0], px[:, 1], px[:, 2]
+        skin = (
+            (r > 95) & (g > 40) & (b > 20)
+            & ((px.max(axis=1) - px.min(axis=1)) > 15)
+            & (np.abs(r - g) > 15) & (r > g) & (r > b)
+            & ((g - b) < 90)   # rejects saturated yellows — skin has a modest g-b gap
+            & ((r - g) < 110)  # rejects pure reds — skin's r-g gap is moderate
+        )
+        return float(skin.mean())
+
     def _decompose_flat(self, h, w) -> list:
-        """Layering for drawn/animated images: connected flat-color regions become
-        object layers (largest first, capped at 5); everything border-touching or small
-        stays Background. Honest proposal — the panel labels it as an estimate."""
+        """Instance-grouped layering for drawn/animated images (the Adobe-like behavior):
+
+        1. every connected flat-color region that is NOT backdrop (backdrop = large AND
+           border-touching — sky bands, ground planes, gradient slices) and NOT a speck
+           joins a shared foreground mask;
+        2. a morphological CLOSE bridges thin ink outlines and hairline gaps so the
+           TOUCHING parts of one thing (skin + shirt + jeans + shoes; the wedges of a
+           beach ball) merge into a single instance instead of one layer per color;
+        3. connected components of that foreground = instances (top 6 by area), each
+           classified Subject (skin tones present) or Object and numbered per class;
+        4. Background = everything else.
+        """
         q = (self.image >> 4).astype(np.uint16)  # 16 levels per channel
         packed = ((q[..., 0] << 8) | (q[..., 1] << 4) | q[..., 2]).astype(np.int32)
-        # merge nearly-identical quantized colors via a small blur on the labels? keep
-        # simple: exact quantized-color components
-        objs: list = []
-        bg = np.full((h, w), 255, np.uint8)
-        seen = 0
+
+        fg = np.zeros((h, w), np.uint8)
+        frame = float(h * w)
         for color in np.unique(packed):
             cm = (packed == color).astype(np.uint8)
-            if cm.sum() < h * w * 0.005:
-                continue
+            if int(cm.sum()) < frame * 0.001:
+                continue  # specks / grain — never part of an instance
             n, lbl, stats, _ = cv2.connectedComponentsWithStats(cm, 8)
+            comps = []
+            backdrop_color = False
             for i in range(1, n):
-                area = stats[i, cv2.CC_STAT_AREA]
-                if area < h * w * 0.005 or area > h * w * 0.55:
+                area = int(stats[i, cv2.CC_STAT_AREA])
+                if area < frame * 0.001:
                     continue
-                x0, y0 = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP]
-                x1 = x0 + stats[i, cv2.CC_STAT_WIDTH]
-                y1 = y0 + stats[i, cv2.CC_STAT_HEIGHT]
-                if x0 <= 1 or y0 <= 1 or x1 >= w - 1 or y1 >= h - 1:
-                    continue  # border-touching flats are backdrop, not objects
-                m = np.where(lbl == i, 255, 0).astype(np.uint8)
-                m = cv2.morphologyEx(m, cv2.MORPH_CLOSE,
-                                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
-                objs.append({"area": int(area), "mask": m})
-        if not objs:
+                x0, y0 = int(stats[i, cv2.CC_STAT_LEFT]), int(stats[i, cv2.CC_STAT_TOP])
+                x1 = x0 + int(stats[i, cv2.CC_STAT_WIDTH])
+                y1 = y0 + int(stats[i, cv2.CC_STAT_HEIGHT])
+                touches = x0 <= 1 or y0 <= 1 or x1 >= w - 1 or y1 >= h - 1
+                spans = (x1 - x0) >= w * 0.9 or (y1 - y0) >= h * 0.9
+                if touches and (area > frame * 0.02 or spans):
+                    # backdrop plane, gradient band, or a full-span quantization sliver.
+                    # Mark the whole COLOR as backdrop: a sky band split in two by an
+                    # object is still sky — its fragments must not become "objects".
+                    backdrop_color = True
+                    break
+                comps.append(i)
+            if backdrop_color:
+                continue
+            for i in comps:
+                fg[lbl == i] = 255
+
+        if not fg.any():
             return []
-        objs.sort(key=lambda o: -o["area"])
+        # bridge ink outlines + tiny gaps so touching parts fuse into one instance
+        k = max(5, int(round(min(h, w) * 0.012)) | 1)
+        fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE,
+                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+
+        n, lbl, stats, _ = cv2.connectedComponentsWithStats(fg, 8)
+        instances = []
+        for i in range(1, n):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area < frame * 0.004 or area > frame * 0.60:
+                continue
+            m = np.where(lbl == i, 255, 0).astype(np.uint8)
+            instances.append({"area": area, "mask": m, "skin": self._region_skin_frac(m)})
+        if not instances:
+            return []
+        instances.sort(key=lambda o: -o["area"])
+        instances = instances[:6]
+
+        bg = np.full((h, w), 255, np.uint8)
+        subjects = objects = 0
         out = []
-        for idx, o in enumerate(objs[:5]):
-            bg[o["mask"] > 0] = 0
-            out.append({"name": f"Object {idx + 1}", "kind": "decomposed", "mask": o["mask"]})
+        for inst in instances:
+            if inst["skin"] > 0.06:
+                subjects += 1
+                name = f"Subject {subjects}"
+            else:
+                objects += 1
+                name = f"Object {objects}"
+            bg[inst["mask"] > 0] = 0
+            out.append({"name": name, "kind": "decomposed", "mask": inst["mask"]})
+        # subjects listed before objects; Background stays the bottom layer
+        out.sort(key=lambda r: (0 if r["name"].startswith("Subject") else 1, r["name"]))
         return [{"name": "Background", "kind": "decomposed", "mask": bg}] + out
 
     # --- text-grounded (semantic) ---------------------------------------------

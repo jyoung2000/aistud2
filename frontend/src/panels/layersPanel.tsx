@@ -111,6 +111,10 @@ export function LayersPanel({
   onSelOpacity,
   onFillBehind,
   onFlattenLayer,
+  onMergeSel,
+  onSelectPixels,
+  onSelectionToLayer,
+  canSelectionToLayer,
 }: {
   layers: Layer[];
   activeId: string | null;
@@ -133,6 +137,13 @@ export function LayersPanel({
   onSelOpacity: (v: number) => void;
   onFillBehind: (id: string) => void;
   onFlattenLayer: (id: string) => void;
+  /** Merge the selected layers into one (transforms + masks baked). */
+  onMergeSel: () => void;
+  /** Load a layer's pixels into the selection so Generate edits the whole layer. */
+  onSelectPixels: (id: string) => void;
+  /** Move the current pixel selection to a new layer (same as ⌘J). */
+  onSelectionToLayer: () => void;
+  canSelectionToLayer: boolean;
 }) {
   const selCount = selectedIds.length;
   const hasDecomposed = layers.some((l) => l.kind === "decomposed");
@@ -209,8 +220,29 @@ export function LayersPanel({
         flexDirection: "column",
       }}
     >
-      <div style={{ padding: "10px 12px 6px", fontSize: 11, letterSpacing: 1, color: "#64748b", fontWeight: 700, display: "flex", alignItems: "center" }}>
+      <div style={{ padding: "10px 12px 6px", fontSize: 11, letterSpacing: 1, color: "#64748b", fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
         LAYERS
+        <button
+          onClick={onSelectionToLayer}
+          disabled={!canSelectionToLayer}
+          title={canSelectionToLayer
+            ? "Move the selected area to a new layer (\u2318J)"
+            : "Make a selection first \u2014 then move it to its own layer (\u2318J)"}
+          style={{
+            marginLeft: "auto",
+            border: "1px solid #2a2f37",
+            background: "transparent",
+            color: canSelectionToLayer ? "#8ecdd8" : "#414a56",
+            borderRadius: 5,
+            padding: "1px 7px",
+            fontSize: 9.5,
+            fontWeight: 700,
+            letterSpacing: 0,
+            cursor: canSelectionToLayer ? "pointer" : "default",
+          }}
+        >
+          {"sel \u2192 layer"}
+        </button>
         <button
           onClick={toggleCollapsed}
           title="Collapse layers panel"
@@ -227,6 +259,11 @@ export function LayersPanel({
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
             <span style={{ fontSize: 10, color: "#e9ecf2" }}>{selCount} selected</span>
             <button style={opBtn} onClick={onGroup} title="Group selected layers">Group</button>
+            {selCount > 1 && (
+              <button style={{ ...opBtn, color: "#8ecdd8" }} onClick={onMergeSel} title="Merge the selected layers into one layer (transforms baked in)">
+                Merge
+              </button>
+            )}
             <button style={opBtn} onClick={onDuplicateSel} title="Duplicate">Dup</button>
             <button style={{ ...opBtn, color: "#e5687a" }} onClick={onDeleteSel} title="Delete">Del</button>
           </div>
@@ -349,6 +386,15 @@ export function LayersPanel({
                     <option key={b} value={b}>{b}</option>
                   ))}
                 </select>
+                {L.mask && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onSelectPixels(L.id); }}
+                    title="Edit this whole layer with AI — selects its pixels; then describe the change and Generate"
+                    style={{ ...smallBtn, color: "#22d3ee", borderColor: "#22d3ee55" }}
+                  >
+                    ⬚ AI
+                  </button>
+                )}
                 {(L.kind === "ai-edit" || L.kind === "outpaint") && (
                   <>
                     <button onClick={(e) => { e.stopPropagation(); onReroll(L.id); }} title="Re-roll (new seed, replace in place)" style={smallBtn}>

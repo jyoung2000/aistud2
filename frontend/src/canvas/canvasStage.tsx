@@ -1540,6 +1540,65 @@ export function CanvasStage() {
     placed.src = dataUrl;
   };
 
+  // Load a layer's pixels into the shared selection so Generate edits the WHOLE layer
+  // at once (per-layer ⬚ button in the panel).
+  const selectLayerPixels = (id: string) => {
+    const L = layers.find((l) => l.id === id);
+    if (!L?.mask || !img) return;
+    pushHistory();
+    setMask(new MaskBuffer(img.naturalWidth, img.naturalHeight, new Uint8Array(L.mask)));
+    setSamPoints([]);
+    setActiveLayer(id);
+    emitMilestone("select");
+    toastSuccess(`"${L.name}" selected — describe the change below and Generate.`);
+  };
+
+  // Merge the selected layers into ONE layer (transforms + masks baked, z-order kept:
+  // the merged layer lands where the lowest of the originals was).
+  const mergeSelectedLayers = async () => {
+    if (!img) return;
+    const ids = new Set(selectedLayerIds);
+    const chosen = layers.filter((l) => ids.has(l.id) && l.kind !== "adjustment");
+    if (chosen.length < 2) return;
+    pushHistory();
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    // composite ONLY the chosen layers (in z order, visibility forced on — the user
+    // explicitly asked to merge them) with their transforms/opacity/blend baked in
+    const copies = chosen.map((l) => ({ ...l, visible: true }));
+    const c = compositeDoc(img, W, H, copies, layerImgs.current, { drawBase: false });
+    const px = c.getContext("2d")!.getImageData(0, 0, W, H).data;
+    const mergedMask = new Uint8Array(W * H);
+    for (let i = 0; i < W * H; i++) mergedMask[i] = px[i * 4 + 3]; // alpha IS the mask
+    const url = c.toDataURL("image/png");
+    const im = await resultToImage(url);
+    const id = newLayerId();
+    layerImgs.current.set(id, im);
+    const lowestIdx = Math.min(...chosen.map((l) => layers.indexOf(l)));
+    const merged: DocLayer = {
+      id,
+      name: `${chosen[chosen.length - 1].name} (merged)`,
+      visible: true,
+      opacity: 1,
+      blendMode: "normal",
+      // merging every decomposed layer must keep reconstructing the base (drawBase off)
+      kind: chosen.every((l) => l.kind === "decomposed") ? "decomposed" : "imported",
+      mask: mergedMask,
+      resultUrl: url,
+      bounds: boundsFromMask(mergedMask, W, H) ?? undefined,
+      transform: { ...IDENTITY_TRANSFORM },
+    };
+    setLayers((ls) => {
+      const kept = ls.filter((l) => !ids.has(l.id) || l.kind === "adjustment");
+      const at = Math.min(lowestIdx, kept.length);
+      return [...kept.slice(0, at), merged, ...kept.slice(at)];
+    });
+    setSelectedLayerIds([id]);
+    setActiveLayer(id);
+    setImgVer((v) => v + 1);
+    toastSuccess(`Merged ${chosen.length} layers into "${merged.name}".`);
+  };
+
   const selectSubject = async () => {
     if (!imageId || !mask) return;
     pushHistory();
@@ -2023,7 +2082,9 @@ export function CanvasStage() {
     }
     const lid = layerAt(ip);
     if (lid) {
-      const sel = e.evt.shiftKey
+      // Shift OR Ctrl/Cmd click toggles a layer in/out of the multi-selection
+      const toggle = e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey;
+      const sel = toggle
         ? selectedLayerIds.includes(lid)
           ? selectedLayerIds.filter((x) => x !== lid)
           : [...selectedLayerIds, lid]
@@ -3370,6 +3431,10 @@ export function CanvasStage() {
           onAlign={alignSelected}
           onDuplicateSel={duplicateSelected}
           onDeleteSel={deleteSelected}
+          onMergeSel={() => void mergeSelectedLayers()}
+          onSelectPixels={selectLayerPixels}
+          onSelectionToLayer={layerFromSelection}
+          canSelectionToLayer={!!mask && !mask.isEmpty()}
           onSelOpacity={setSelOpacity}
           onFillBehind={fillBehindLayer}
           onFlattenLayer={flattenLayer}

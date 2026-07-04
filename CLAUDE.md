@@ -159,9 +159,15 @@ drawing (or a cartoon patch inside a photo) reads as broken even with a perfect 
   ("photorealistic, seamless, detailed") is REPLACED by medium-matched quality tags for
   non-photos. **Exception: `restyle` beats the lock** — "make it watercolor" is a
   deliberate medium change and must not compile into a contradiction.
-- **Decompose** (`select_sam._decompose_flat`): drawn images skip GrabCut's photo prior —
-  connected flat-color regions become `Object N` layers (interior, 0.5–55% of frame,
-  capped 5) with everything border-touching as Background.
+- **Decompose** (`select_sam._decompose_flat` — instance-grouped, the Adobe-like
+  behavior): non-backdrop flat-color regions join one foreground mask (backdrop = large
+  border-touching planes/gradient bands, decided per COLOR so a sky band split by an
+  object stays sky; full-span quantization slivers excluded; specks <0.1% dropped); a
+  size-scaled morphological CLOSE bridges ink outlines so TOUCHING parts fuse (skin+
+  shirt+jeans+shoes = ONE person; ball wedges = ONE ball); connected components = top-6
+  instances, each classified **Subject N** (skin-tone rule, tightened against saturated
+  yellows g-b≥90 and pure reds r-g≥110) or **Object N**, Background = rest. The photo/CG
+  GrabCut path labels its foreground Subject-vs-Object by the same skin rule.
 - **UI**: a labeled **"Image medium" segmented control in the AI panel** (📷 Photo / ✏
   Drawn / 🧊 3D-CG; `data-tour="medium"`) shows the auto-detection + confidence and lets
   the user correct it — canvas ↔ inspector bridge via `state/viewState.ts`
@@ -543,7 +549,14 @@ Layers/doc: **Cmd/Ctrl+J** layer-via-copy (selection→new movable layer, `layer
   multi-select (click / Shift=range / Cmd-Ctrl=add, synced with canvas); Group selected
   (`Document.groups`, persisted in `.neuclip`); align L/Cx/R/T/Cy/B via transformedBounds;
   duplicate (offset copy, shares pixels), delete (Del), opacity across selection; the Move
-  tool transforms the whole selection together.
+  tool transforms the whole selection together. Canvas clicks toggle multi-selection with
+  **Shift OR Ctrl/Cmd**. **Merge** (panel ops row, 2+ selected): composites ONLY the
+  chosen layers via `compositeDoc(drawBase:false)` — transforms/opacity/blend baked, mask
+  = merged alpha — inserted at the lowest original's z; kind stays `decomposed` when all
+  inputs were (drawBase contract), else `imported`. **⬚ AI** on any masked layer row =
+  `selectLayerPixels` (loads the layer's mask into the shared selection → Generate edits
+  the whole layer at once). **sel → layer** button atop the panel = `layerFromSelection`
+  (⌘J) for mouse users.
 
 ## Edit document model (non-destructive — Tier-1)
 The editor is a **layer document**, not a flattened image. The base image is NEVER mutated;
