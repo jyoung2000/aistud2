@@ -12,7 +12,8 @@ export function HelpMenu({ onShowTour }: { onShowTour: () => void }) {
   const [finder, setFinder] = useState(false);
   const [shortcuts, setShortcuts] = useState(false);
 
-  // ⌘K opens the finder; "?" (outside inputs) opens the shortcut overlay
+  // ⌘K opens the finder; "?" (outside inputs) opens the shortcut overlay; Settings and
+  // other panels open it via the "neuclip:open-shortcuts" event
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = document.activeElement;
@@ -25,8 +26,13 @@ export function HelpMenu({ onShowTour }: { onShowTour: () => void }) {
         setShortcuts((v) => !v);
       }
     };
+    const onOpen = () => setShortcuts(true);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("neuclip:open-shortcuts", onOpen);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("neuclip:open-shortcuts", onOpen);
+    };
   }, []);
 
   return (
@@ -34,7 +40,7 @@ export function HelpMenu({ onShowTour }: { onShowTour: () => void }) {
       <Menu label="? Help" width={250}>
         <MenuItem label="Replay guided first edit" hint="learn by doing" onClick={() => startTutorial()} />
         <MenuItem label="Show interface tour" hint="45s" onClick={onShowTour} />
-        <MenuItem label="Keyboard shortcuts" hint="?" onClick={() => setShortcuts(true)} />
+        <MenuItem label="Keyboard shortcuts — view & remap" hint="?" onClick={() => setShortcuts(true)} />
         <MenuItem label="Feature finder — where is…?" hint="⌘K" onClick={() => setFinder(true)} />
       </Menu>
       {finder && <FeatureFinder onClose={() => setFinder(false)} />}

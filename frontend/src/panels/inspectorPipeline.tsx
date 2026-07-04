@@ -13,6 +13,7 @@ import { TunedPrompts } from "./tunedPrompts";
 import { LoraPanel } from "./loraPanel";
 import type { AttachedLora } from "../api/loras";
 import { setGenConfig } from "../state/genConfig";
+import { useViewState, type Medium } from "../state/viewState";
 
 // Minimal "Model & params" step of the inspector pipeline. Stub host so the Reference
 // block (M1) and Compare mode (shootout M1) can be built and verified standalone;
@@ -252,6 +253,8 @@ export function InspectorPipeline() {
         </label>
       )}
 
+      <MediumControl />
+
       <ReferenceBlock
         model={model}
         value={refState}
@@ -281,5 +284,61 @@ export function InspectorPipeline() {
         </>
       )}
     </aside>
+  );
+}
+
+/** Image medium (photo / drawn / 3D-CG) — auto-detected at load; prompts are styled to
+ *  it and never cross mediums. The user corrects the detection here when it's wrong. */
+function MediumControl() {
+  const vs = useViewState();
+  if (!vs.hasImage || (!vs.detectedMedium && !vs.mediumOverride)) return null;
+  const active: Medium = vs.mediumOverride ?? vs.detectedMedium ?? "photo";
+  const OPTIONS: { id: Medium; label: string }[] = [
+    { id: "photo", label: "📷 Photo" },
+    { id: "drawn", label: "✏ Drawn / animated" },
+    { id: "render_cg", label: "🧊 3D / CG" },
+  ];
+  const pick = (m: Medium) =>
+    window.dispatchEvent(new CustomEvent("neuclip:set-medium", { detail: m }));
+  return (
+    <section data-tour="medium" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <span style={{ fontSize: 11, color: COLOR_GENERATION, fontWeight: 600 }}>
+        Image medium
+      </span>
+      <div style={{ display: "flex", gap: 4 }}>
+        {OPTIONS.map((o) => (
+          <button
+            key={o.id}
+            onClick={() => pick(o.id)}
+            title={
+              o.id === active
+                ? vs.mediumOverride
+                  ? "Set by you — click another option to change it"
+                  : `Auto-detected (${Math.round((vs.mediumConfidence ?? 0) * 100)}%${vs.mediumCue ? ` — ${vs.mediumCue}` : ""})`
+                : `Treat the image as ${o.label.replace(/^\S+\s/, "")}`
+            }
+            style={{
+              flex: 1,
+              padding: "5px 4px",
+              fontSize: 10.5,
+              borderRadius: 6,
+              cursor: "pointer",
+              border: `1px solid ${o.id === active ? COLOR_GENERATION : "#2a2f37"}`,
+              background: o.id === active ? `${COLOR_GENERATION}22` : "transparent",
+              color: o.id === active ? COLOR_GENERATION : "#8b94a3",
+              fontWeight: o.id === active ? 700 : 400,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <span style={{ fontSize: 10, color: "#5b6470", lineHeight: 1.4 }}>
+        {vs.mediumOverride
+          ? "Set manually — prompts are styled for this medium and never cross it."
+          : `Auto-detected${vs.mediumConfidence != null ? ` (${Math.round(vs.mediumConfidence * 100)}% sure)` : ""} — click to correct it if that's wrong.`}
+      </span>
+    </section>
   );
 }

@@ -187,21 +187,40 @@ export function SettingsModal({
             <div style={{ fontSize: 11, letterSpacing: 1, color: "#64748b", fontWeight: 700 }}>
               HELP
             </div>
-            <button
-              onClick={onShowWalkthrough}
-              style={{
-                marginTop: 8,
-                padding: "7px 14px",
-                borderRadius: 6,
-                border: "1px solid #2a2f37",
-                background: "transparent",
-                color: "#cbd5e1",
-                cursor: "pointer",
-                fontSize: 12,
-              }}
-            >
-              Show walkthrough
-            </button>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button
+                onClick={onShowWalkthrough}
+                style={{
+                  padding: "7px 14px",
+                  borderRadius: 6,
+                  border: "1px solid #2a2f37",
+                  background: "transparent",
+                  color: "#cbd5e1",
+                  cursor: "pointer",
+                  fontSize: 12,
+                }}
+              >
+                Show walkthrough
+              </button>
+              <button
+                onClick={() => {
+                  onClose();
+                  window.dispatchEvent(new CustomEvent("neuclip:open-shortcuts"));
+                }}
+                title="View every shortcut and remap the tool keys (also: press ?)"
+                style={{
+                  padding: "7px 14px",
+                  borderRadius: 6,
+                  border: "1px solid #2a2f37",
+                  background: "transparent",
+                  color: "#cbd5e1",
+                  cursor: "pointer",
+                  fontSize: 12,
+                }}
+              >
+                Keyboard shortcuts…
+              </button>
+            </div>
             <TipsToggle />
           </>
         )}

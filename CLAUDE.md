@@ -162,9 +162,13 @@ drawing (or a cartoon patch inside a photo) reads as broken even with a perfect 
 - **Decompose** (`select_sam._decompose_flat`): drawn images skip GrabCut's photo prior —
   connected flat-color regions become `Object N` layers (interior, 0.5–55% of frame,
   capped 5) with everything border-touching as Background.
-- **UI**: a chip in the Generate breadcrumb shows the detected medium (📷/✏/🧊 + cues in
-  the tooltip); clicking cycles an override (starred) that rides `/synthesize.medium`;
-  cycling back to the detected value returns to auto. `/load` response carries `medium`.
+- **UI**: a labeled **"Image medium" segmented control in the AI panel** (📷 Photo / ✏
+  Drawn / 🧊 3D-CG; `data-tour="medium"`) shows the auto-detection + confidence and lets
+  the user correct it — canvas ↔ inspector bridge via `state/viewState.ts`
+  (detectedMedium/mediumOverride) + the `neuclip:set-medium` event; picking the detected
+  value returns to auto. A compact chip in the Generate breadcrumb mirrors it (cycles on
+  click, starred when manual). Overrides ride `/synthesize.medium`. `/load` carries
+  `medium`.
 - Tests: `tests/test_medium.py` (3-way detection, vocab suppression, style locks,
   restyle exception, override, flat decompose).
 

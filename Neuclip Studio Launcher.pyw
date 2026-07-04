@@ -30,7 +30,8 @@ APP_NAME = "Neuclip Studio"
 
 STEPS = [
     ("Checking Python environment", 10),
-    ("Installing packages (first run only)", 70),
+    ("Installing packages (first run only)", 55),
+    ("GPU setup (NVIDIA → CUDA by default)", 85),
     ("Starting Neuclip Studio", 100),
 ]
 
@@ -106,6 +107,42 @@ def _install(log) -> None:
         raise RuntimeError("Package install failed — see the details below.")
 
 
+def _gpu_setup(log) -> None:
+    """GPU by DEFAULT: an NVIDIA machine gets CUDA PyTorch installed automatically
+    (one-time ~2.5 GB); CPU is only the fallback when there's no GPU or the install
+    fails. The same venv serves both the native window and the browser, so both run
+    on the GPU identically."""
+    if not shutil.which("nvidia-smi"):
+        log("no NVIDIA GPU detected — running on CPU")
+        return
+    probe = subprocess.run(
+        [str(VPY), "-c", "import torch,sys;sys.exit(0 if torch.cuda.is_available() else 1)"],
+        capture_output=True,
+        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+    )
+    if probe.returncode == 0:
+        log("GPU ready — CUDA PyTorch already installed")
+        return
+    log("NVIDIA GPU detected — installing CUDA PyTorch (one-time, ~2.5 GB — please wait)…")
+    code, out = _run(
+        [str(VPY), "-m", "pip", "install", "--timeout", "60", "torch", "torchvision",
+         "--index-url", "https://download.pytorch.org/whl/cu124"], log,
+    )
+    if code != 0:
+        # GPU is best-effort: never block the app on it — fall back to CPU with honesty
+        if any(h.lower() in out.lower() for h in NETWORK_HINTS):
+            log("! CUDA download blocked by the network (see adguard-home-allowlist.txt)")
+        log("! GPU setup failed — starting on CPU; run the launcher again to retry the GPU")
+        return
+    verify = subprocess.run(
+        [str(VPY), "-c",
+         "import torch;print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CUDA unavailable')"],
+        capture_output=True, text=True,
+        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+    )
+    log(f"GPU ready: {verify.stdout.strip() or 'installed'}")
+
+
 def _launch(log) -> None:
     if os.environ.get("NEUCLIP_LAUNCHER_NO_RUN") == "1":  # test hook
         log("(launch skipped — NEUCLIP_LAUNCHER_NO_RUN=1)")
@@ -118,15 +155,11 @@ def _launch(log) -> None:
 
 
 def _do_all(log, progress) -> None:
-    for i, (label, pct) in enumerate(STEPS):
-        progress(label, pct * 0 if i == 0 else None)  # label first
+    actions = [_ensure_venv, _install, _gpu_setup, _launch]
+    for (label, pct), action in zip(STEPS, actions):
+        progress(label, None)  # label first
         log(f"— {label}")
-        if i == 0:
-            _ensure_venv(log)
-        elif i == 1:
-            _install(log)
-        else:
-            _launch(log)
+        action(log)
         progress(label, pct)
 
 

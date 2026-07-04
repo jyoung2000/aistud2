@@ -210,6 +210,26 @@ export function CanvasStage() {
   const [detectedMedium, setDetectedMedium] = useState<DetectedMedium | null>(null);
   const [mediumOverride, setMediumOverride] = useState<"photo" | "drawn" | "render_cg" | null>(null);
 
+  // publish the medium to the shared view store (the AI panel renders the control there)
+  // and accept override changes back from it
+  useEffect(() => {
+    setViewState({
+      detectedMedium: detectedMedium?.medium ?? null,
+      mediumConfidence: detectedMedium?.confidence ?? null,
+      mediumCue: detectedMedium?.cues?.[0] ?? null,
+      mediumOverride,
+    });
+  }, [detectedMedium, mediumOverride]);
+  useEffect(() => {
+    const onSetMedium = (e: Event) => {
+      const m = (e as CustomEvent<"photo" | "drawn" | "render_cg" | null>).detail;
+      // picking the detected value (or null) returns to auto
+      setMediumOverride(m && m !== detectedMedium?.medium ? m : null);
+    };
+    window.addEventListener("neuclip:set-medium", onSetMedium);
+    return () => window.removeEventListener("neuclip:set-medium", onSetMedium);
+  }, [detectedMedium]);
+
   // layer document — `img` is the base (never replaced after open); edits become layers.
   const [layers, setLayers] = useState<DocLayer[]>([]);
   const layerImgs = useRef<Map<string, HTMLImageElement>>(new Map());

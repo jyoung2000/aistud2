@@ -7,6 +7,8 @@ import { useSyncExternalStore } from "react";
 
 export type ViewMode = "normal" | "split" | "diff";
 
+export type Medium = "photo" | "drawn" | "render_cg";
+
 export interface ViewState {
   hasImage: boolean;
   viewMode: ViewMode;
@@ -16,6 +18,12 @@ export interface ViewState {
   selPct: number; // selection area as % of the document
   backend: string | null; // "sam2" | "fallback" | null
   busy: boolean; // a select/refine call is in flight
+  // image medium (canvas → inspector): what the classifier detected + any user override.
+  // The inspector's medium control dispatches "neuclip:set-medium" back to the canvas.
+  detectedMedium: Medium | null;
+  mediumConfidence: number | null;
+  mediumCue: string | null;
+  mediumOverride: Medium | null;
 }
 
 const DEFAULT: ViewState = {
@@ -27,6 +35,10 @@ const DEFAULT: ViewState = {
   selPct: 0,
   backend: null,
   busy: false,
+  detectedMedium: null,
+  mediumConfidence: null,
+  mediumCue: null,
+  mediumOverride: null,
 };
 
 let state: ViewState = DEFAULT;
