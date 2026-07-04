@@ -70,8 +70,59 @@ def _verify_cuda_torch() -> None:
     print(f"  CUDA torch OK: torch {torch.__version__} (CUDA {cuda_tag})")
 
 
+def _make_brand_assets(build_dir: Path) -> dict:
+    """Generate the app icon (+ Windows boot splash) with PIL — no binary assets in the
+    repo. Returns paths (empty dict when PIL is unavailable; everything is optional)."""
+    out: dict = {}
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        print("  (Pillow unavailable — building without icon/splash)")
+        return out
+    build_dir.mkdir(parents=True, exist_ok=True)
+
+    # icon: dark rounded square, amber selection corners around a cyan dot
+    size = 256
+    im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle([8, 8, size - 8, size - 8], radius=52, fill=(13, 15, 18, 255))
+    m = 62
+    for cx, cy in ((m, m), (size - m, m), (m, size - m), (size - m, size - m)):
+        d.rectangle([cx - 26, cy - 6, cx + 26, cy + 6], fill=(242, 163, 60, 255))
+        d.rectangle([cx - 6, cy - 26, cx + 6, cy + 26], fill=(242, 163, 60, 255))
+    d.ellipse([size / 2 - 34, size / 2 - 34, size / 2 + 34, size / 2 + 34], fill=(34, 211, 238, 255))
+    ico = build_dir / "neuclip.ico"
+    icns = build_dir / "neuclip.icns"
+    png = build_dir / "neuclip.png"
+    im.save(png)
+    im.save(ico, sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    out["png"] = png
+    out["ico"] = ico
+    if sys.platform == "darwin":
+        try:
+            im.resize((512, 512)).save(icns)
+            out["icns"] = icns
+        except Exception:
+            pass
+
+    # Windows-only bootloader splash: shows the INSTANT the exe runs, before Python
+    # exists — the number-one "is it even starting?" fix. Closed by desktop.py.
+    if sys.platform.startswith("win"):
+        sp = Image.new("RGB", (440, 260), (13, 15, 18))
+        ds = ImageDraw.Draw(sp)
+        ds.text((40, 96), APP_NAME, fill=(226, 232, 240))
+        ds.text((40, 124), "starting…", fill=(125, 134, 148))
+        ds.rectangle([40, 170, 400, 174], fill=(29, 34, 42))
+        ds.rectangle([40, 170, 180, 174], fill=(242, 163, 60))
+        splash = build_dir / "splash.png"
+        sp.save(splash)
+        out["splash"] = splash
+    return out
+
+
 def main() -> None:
     gpu = "--gpu" in sys.argv[1:]
+    onefile = "--onefile" in sys.argv[1:]  # legacy single-file (slower every launch)
     name = GPU_APP_NAME if gpu else APP_NAME
 
     if not (DIST / "index.html").exists():
@@ -85,6 +136,8 @@ def main() -> None:
     # the profile schema (a data file PyInstaller won't collect on its own).
     sep = ";" if sys.platform.startswith("win") else ":"
     schema = SIDECAR / "app" / "profiles" / "schema.json"
+    research = SIDECAR / "app" / "profiles" / "research"
+    assets = _make_brand_assets(SIDECAR / "build_assets")
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
@@ -93,11 +146,18 @@ def main() -> None:
         "--name", name,
         "--add-data", f"{DIST}{sep}web",
         "--add-data", f"{schema}{sep}app/profiles",
+        "--add-data", f"{research}{sep}app/profiles/research",
         "--paths", str(SIDECAR),
     ]
+    if assets.get("icns") and sys.platform == "darwin":
+        cmd += ["--icon", str(assets["icns"])]
+    elif assets.get("ico") and sys.platform.startswith("win"):
+        cmd += ["--icon", str(assets["ico"])]
+    if assets.get("splash"):
+        cmd += ["--splash", str(assets["splash"])]
 
     # pywebview → the app opens in a real native window (WebView2/WebKit) instead of a
-    # browser tab. Optional: without it the browser fallback in serve_app() still works.
+    # browser tab. Optional: without it the browser fallback in desktop.py still works.
     if _installed("webview"):
         cmd += ["--collect-all", "webview"]
         print("  bundling pywebview → native desktop window")
@@ -106,10 +166,8 @@ def main() -> None:
               "`pip install pywebview` before building for a native window)")
 
     if gpu:
-        # CUDA torch is multi-GB. --onedir keeps it a fast-launching folder (an --onefile
-        # would re-extract gigabytes to temp on every double-click). Bundle CUDA wholesale.
+        # CUDA torch is multi-GB. Bundle CUDA wholesale.
         _verify_cuda_torch()
-        cmd += ["--onedir"]
         # Only --collect-all packages that are actually installed. On Windows the CUDA libs
         # ship INSIDE the torch wheel (torch/lib/*.dll) and the standalone nvidia-* packages
         # are usually absent, so collecting a missing one would abort the build.
@@ -118,8 +176,12 @@ def main() -> None:
                 cmd += ["--collect-all", pkg]
             else:
                 print(f"  (skipping --collect-all {pkg}: not installed)")
-    else:
-        cmd += ["--onefile"]
+
+    # DEFAULT IS --onedir: a onefile exe re-extracts the whole bundle (cv2/numpy/scipy,
+    # hundreds of MB) to temp on EVERY double-click and gets antivirus-rescanned each
+    # time — that's 10-40 s before Python even starts. onedir launches in ~1-2 s and is
+    # what the installer ships. --onefile stays available for a single portable file.
+    cmd += ["--onefile"] if (onefile and not gpu) else ["--onedir"]
 
     cmd.append(str(SIDECAR / "app" / "desktop.py"))
     subprocess.check_call(cmd, cwd=str(SIDECAR))

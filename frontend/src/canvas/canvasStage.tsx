@@ -74,6 +74,7 @@ import { emitMilestone } from "../state/milestones";
 import { fireTip } from "../ui/coachmarks";
 import { setViewState, useViewState } from "../state/viewState";
 import { actionForKey, keyFor, useKeymap } from "../state/keymap";
+import { baseUrl as sidecarBaseUrl } from "../api/sidecar";
 import { Menu, MenuItem, MenuRow, MenuDivider } from "../ui/menu";
 import { HUE, NEUTRAL, RADII, TYPE, btn, field, divider } from "../ui/tokens";
 import { Tip } from "../ui/tooltip";
@@ -2304,6 +2305,27 @@ export function CanvasStage() {
     const json = serializeDoc(img.naturalWidth, img.naturalHeight, imgToDataUrl(img), layers, docTransform, groups);
     void saveFile(new Blob([json], { type: "application/json" }), "neuclip-project.neuclip");
   };
+
+  // Double-clicked .neuclip file (installer file association): the sidecar hands the
+  // project over exactly once via /bootstrap — open it as if the user used File ▸ Open.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch(`${await sidecarBaseUrl()}/bootstrap`);
+        if (!res.ok) return;
+        const j = (await res.json()) as { project: { name: string; data_b64: string } | null };
+        if (j.project?.data_b64) {
+          const blob = await (await fetch(`data:application/octet-stream;base64,${j.project.data_b64}`)).blob();
+          await openProject(new File([blob], j.project.name || "project.neuclip"));
+          toastSuccess(`Opened ${j.project.name}`);
+        }
+      } catch {
+        /* no sidecar yet or nothing to open — normal */
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const openProject = async (file: File) => {
    try {
     const text = await file.text();

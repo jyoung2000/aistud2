@@ -14,12 +14,27 @@ if [ -z "$PY" ]; then
 fi
 
 VENV="$REPO/sidecar/.venv"
-[ -d "$VENV" ] || "$PY" -m venv "$VENV" || { echo "Could not create Python environment."; read -r _; exit 1; }
+[ -x "$VENV/bin/python" ] || "$PY" -m venv "$VENV" || { echo "Could not create Python environment."; read -r _; exit 1; }
 VPY="$VENV/bin/python"
+
+# repair a venv that exists without pip; recreate it if that fails
+if ! "$VPY" -m pip --version >/dev/null 2>&1; then
+  "$VPY" -m ensurepip --upgrade --default-pip >/dev/null 2>&1
+fi
+if ! "$VPY" -m pip --version >/dev/null 2>&1; then
+  echo "Recreating Python environment (pip missing)…"
+  rm -rf "$VENV"
+  "$PY" -m venv "$VENV" || { echo "Could not create Python environment."; read -r _; exit 1; }
+  "$VPY" -m ensurepip --upgrade --default-pip >/dev/null 2>&1
+fi
+"$VPY" -m pip --version >/dev/null 2>&1 || {
+  echo "This Python can't provide pip (ensurepip missing). Install Python 3.11+ from python.org and retry."
+  read -r _; exit 1
+}
 
 echo "Installing build tools (first run only)…"
 "$VPY" -m pip install --quiet --upgrade pip
-"$VPY" -m pip install --quiet -r "$REPO/sidecar/requirements.txt" pyinstaller || { echo "Install failed."; read -r _; exit 1; }
+"$VPY" -m pip install --quiet -r "$REPO/sidecar/requirements.txt" pyinstaller pywebview pillow || { echo "Install failed."; read -r _; exit 1; }
 
 # Rebuild the UI if it's missing and Node is available (a built UI ships in the repo).
 if [ ! -f "$REPO/frontend/dist/index.html" ] && command -v npm >/dev/null 2>&1; then

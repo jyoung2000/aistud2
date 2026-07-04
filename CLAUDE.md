@@ -254,20 +254,36 @@ control signal — the **edited** rig, not the raw extraction, becomes the contr
   figure+blank+library · [x] P6 output wiring (control image + strength + layer source).
 
 ## Launching / packaging
-- **Easy path — single-file app (DEFAULT consumer artifact):** one self-contained binary
-  that bundles the FastAPI sidecar + the built web UI; on launch it opens a **native
-  desktop window** via pywebview (WebView2 on Windows / WebKit elsewhere; uvicorn runs on
-  a daemon thread, the window owns the main thread, closing it exits cleanly) and falls
-  back to serving + opening the browser when pywebview is absent/errors
-  (`NEUCLIP_BROWSER=1` forces the browser; `NEUCLIP_NO_BROWSER=1` = headless). NO
-  Python/Node/Rust/Tauri for the end user, no compile step. Entry:
-  `sidecar/app/desktop.py` → `main.serve_app()`; UI located via `_ui_dir()` (frozen:
-  `sys._MEIPASS/web`, dev: `frontend/dist`) and mounted at `/`. Built by `sidecar/
-  build_app.py` (PyInstaller `--onefile --windowed`, `--add-data dist:web`,
-  `--collect-all webview` when pywebview is installed — CI installs it). CI: `.github/
-  workflows/app.yml` builds Win/macOS(arm+intel)/Linux on tag push → draft Release. The
-  frontend uses same-origin requests in production (`api/sidecar.ts` `baseUrl()` returns
-  "" unless Tauri or vite-dev).
+- **Easy path — installed desktop app (DEFAULT consumer artifact):** a fast-launching
+  **onedir** bundle (FastAPI sidecar + built web UI + research layers) delivered through
+  platform installers: **Windows = Inno Setup wizard** (`installer/windows.iss` — modern
+  wizard w/ progress bar, per-user install (no UAC), Start-menu + optional desktop icon,
+  uninstaller, **`.neuclip` file association**), **macOS = drag-to-Applications DMG**,
+  Linux = tarball. `build_app.py` defaults to `--onedir` — a onefile exe re-extracts the
+  whole bundle to temp on EVERY double-click + gets AV-rescanned (10-40 s before Python
+  starts); onedir boots to /health in ~1 s (measured 0.7 s frozen). `--onefile` stays as
+  an explicit flag for a portable single file.
+  **Boot UX:** `app/desktop.py` (entry, `main()`) opens the pywebview native window
+  IMMEDIATELY with an inline branded loading screen (indeterminate bar) while the heavy
+  imports (numpy/cv2/fastapi ≈ 5-10 s cold) happen on the server thread; the window
+  navigates to the UI when /health answers (120 s deadline → error page). Windows builds
+  also get a PyInstaller `--splash` (generated PNG) that appears before Python itself and
+  is closed by desktop.py. Icon + splash are generated with PIL at build time
+  (`sidecar/build_assets/`, gitignored) — no binary assets in the repo. Browser fallback
+  when pywebview is absent (`NEUCLIP_BROWSER=1` forces it; `NEUCLIP_NO_BROWSER=1` =
+  headless). A double-clicked `.neuclip` file rides argv → `NEUCLIP_OPEN_PROJECT` →
+  one-shot **`/bootstrap`** (consumed on first read) → the frontend opens the project on
+  connect (canvasStage bootstrap effect).
+  `build_app.py` bundles `app/profiles/research/*.nprofile` via --add-data (they're data
+  files PyInstaller won't collect — a frozen app without them silently loses the prompt
+  research). CI: `.github/workflows/app.yml` → Windows Setup .exe, macOS .dmg (arm+intel),
+  Linux .tar.gz, GPU Setup .exe + portable zip, on tag push → draft Release. The frontend
+  uses same-origin requests in production (`api/sidecar.ts` `baseUrl()` returns "" unless
+  Tauri or vite-dev).
+- **Root launcher .bat/.command scripts** verify the venv has pip and REPAIR it
+  (`ensurepip` → recreate) — a Python without ensurepip used to leave a pip-less venv and
+  every install failed with "No module named pip"; they also reject the Microsoft Store
+  python stub with a clear message.
 - **GPU build (NVIDIA — CUDA on double-click):** `build_app.py --gpu` bundles CUDA PyTorch so
   the double-clicked app uses the GPU with no install/first-run download. It's `--onedir` (a
   ~4–5 GB folder — an onefile would re-extract gigabytes to temp each launch) and `--collect-all`

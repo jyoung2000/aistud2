@@ -30,6 +30,11 @@ sidecar/app/weights/
 /Neuclip Studio
 /Neuclip Studio.exe
 /Neuclip Studio.app/
+/Neuclip Studio GPU
+
+# generated at build time (icon / splash) + installer output
+sidecar/build_assets/
+installer/out/
 
 # os
 .DS_Store

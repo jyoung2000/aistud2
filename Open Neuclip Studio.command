@@ -13,12 +13,27 @@ if [ -z "$PY" ]; then
 fi
 
 VENV="$REPO/sidecar/.venv"
-[ -d "$VENV" ] || "$PY" -m venv "$VENV" || { echo "Could not create Python environment."; read -r _; exit 1; }
+[ -x "$VENV/bin/python" ] || "$PY" -m venv "$VENV" || { echo "Could not create Python environment."; read -r _; exit 1; }
 VPY="$VENV/bin/python"
+
+# repair a venv that exists without pip; recreate it if that fails
+if ! "$VPY" -m pip --version >/dev/null 2>&1; then
+  "$VPY" -m ensurepip --upgrade --default-pip >/dev/null 2>&1
+fi
+if ! "$VPY" -m pip --version >/dev/null 2>&1; then
+  echo "Recreating Python environment (pip missing)…"
+  rm -rf "$VENV"
+  "$PY" -m venv "$VENV" || { echo "Could not create Python environment."; read -r _; exit 1; }
+  "$VPY" -m ensurepip --upgrade --default-pip >/dev/null 2>&1
+fi
+"$VPY" -m pip --version >/dev/null 2>&1 || {
+  echo "This Python can't provide pip (ensurepip missing). Install Python 3.11+ from python.org and retry."
+  read -r _; exit 1
+}
 
 echo "Preparing Neuclip Studio (first run only — this installs a few packages)…"
 "$VPY" -m pip install --quiet --upgrade pip
-"$VPY" -m pip install --quiet -r "$REPO/sidecar/requirements.txt" || { echo "Dependency install failed."; read -r _; exit 1; }
+"$VPY" -m pip install --quiet -r "$REPO/sidecar/requirements.txt" pywebview || { echo "Dependency install failed."; read -r _; exit 1; }
 
 # GPU: auto-install CUDA PyTorch on machines with an NVIDIA GPU (Linux desktops).
 if command -v nvidia-smi >/dev/null 2>&1; then

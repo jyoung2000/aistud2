@@ -1,10 +1,12 @@
-name: Build double-click app
+name: Build desktop app + installers
 
-# Builds the single-file, no-dependencies Neuclip Studio app for every OS and attaches it
-# to a GitHub Release. No Rust/Tauri — just Python + Node, so it's fast and reliable.
+# Builds the fast-launching (onedir) Neuclip Studio app for every OS and wraps it the way
+# each platform expects: a Windows setup wizard (Inno Setup — progress bar, Start menu,
+# uninstaller, .neuclip file association), a macOS drag-to-Applications DMG, and a Linux
+# tarball. No Rust/Tauri — just Python + Node.
 #
 #   git tag v0.1.0 && git push origin v0.1.0
-# Then download the app for your OS from the Release and double-click it.
+# Then download the installer for your OS from the draft Release.
 on:
   push:
     tags:
@@ -25,7 +27,7 @@ jobs:
           - os: macos-13
             asset: Neuclip-Studio-macOS-Intel
           - os: windows-latest
-            asset: Neuclip-Studio-Windows
+            asset: Neuclip-Studio-Windows-Setup
           - os: ubuntu-22.04
             asset: Neuclip-Studio-Linux
     runs-on: ${{ matrix.os }}
@@ -47,45 +49,61 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Build single-file app
+      - name: Build app (onedir — fast launch)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r sidecar/requirements.txt pyinstaller pywebview
+          python -m pip install -r sidecar/requirements.txt pyinstaller pywebview pillow
           python sidecar/build_app.py
 
-      - name: Package (macOS .app)
+      # --- Windows: a real setup wizard -------------------------------------------
+      - name: Build installer (Inno Setup)
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\windows.iss
+          Move-Item "installer\out\Neuclip-Studio-Setup.exe" "${{ matrix.asset }}.exe"
+
+      # --- macOS: drag-to-Applications DMG -----------------------------------------
+      - name: Build DMG
         if: startsWith(matrix.os, 'macos')
         run: |
-          cd sidecar/dist
-          ditto -c -k --keepParent "Neuclip Studio.app" "../../${{ matrix.asset }}.zip"
+          mkdir -p dmgroot
+          cp -R "sidecar/dist/Neuclip Studio.app" dmgroot/
+          ln -s /Applications dmgroot/Applications
+          hdiutil create -volname "Neuclip Studio" -srcfolder dmgroot -ov -format UDZO "${{ matrix.asset }}.dmg"
 
-      - name: Package (Windows)
-        if: startsWith(matrix.os, 'windows')
-        run: |
-          Compress-Archive -Path "sidecar/dist/Neuclip Studio.exe" -DestinationPath "${{ matrix.asset }}.zip"
-
+      # --- Linux: tarball of the onedir folder --------------------------------------
       - name: Package (Linux)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           cd sidecar/dist
-          zip "../../${{ matrix.asset }}.zip" "Neuclip Studio"
+          tar czf "../../${{ matrix.asset }}.tar.gz" "Neuclip Studio"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}.zip
+          path: |
+            ${{ matrix.asset }}.exe
+            ${{ matrix.asset }}.dmg
+            ${{ matrix.asset }}.tar.gz
+          if-no-files-found: error
 
       - name: Attach to Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.asset }}.zip
+          files: |
+            ${{ matrix.asset }}.exe
+            ${{ matrix.asset }}.dmg
+            ${{ matrix.asset }}.tar.gz
           draft: true
           name: "Neuclip Studio ${{ github.ref_name }}"
 
-  # GPU build: Windows exe with CUDA PyTorch bundled — double-click activates the NVIDIA GPU,
-  # no install. Large (~4-5 GB) and shipped as a folder (onedir) so launch stays fast.
+  # GPU build: Windows with CUDA PyTorch bundled — the NVIDIA GPU works on double-click.
+  # Large (~4-5 GB): shipped as an installer AND a portable zip (the zip skips the
+  # long installer-compression step for people who just want the folder).
   build-gpu-windows:
     runs-on: windows-latest
     steps:
@@ -108,24 +126,37 @@ jobs:
       - name: Build GPU app (CUDA torch bundled)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r sidecar/requirements.txt pyinstaller pywebview
+          python -m pip install -r sidecar/requirements.txt pyinstaller pywebview pillow
           python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
           python sidecar/build_app.py --gpu
 
-      - name: Package (Windows GPU folder)
+      - name: Build GPU installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            "/DAppSrc=..\sidecar\dist\Neuclip Studio GPU" "/DAppEdition= GPU" installer\windows.iss
+          Move-Item "installer\out\Neuclip-Studio-Setup GPU.exe" "Neuclip-Studio-Windows-GPU-Setup.exe"
+
+      - name: Package portable zip
         run: |
           Compress-Archive -Path "sidecar/dist/Neuclip Studio GPU" -DestinationPath "Neuclip-Studio-Windows-GPU.zip"
 
-      - name: Upload GPU build artifact
+      - name: Upload GPU build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Neuclip-Studio-Windows-GPU
-          path: Neuclip-Studio-Windows-GPU.zip
+          path: |
+            Neuclip-Studio-Windows-GPU-Setup.exe
+            Neuclip-Studio-Windows-GPU.zip
+          if-no-files-found: error
 
       - name: Attach to Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: Neuclip-Studio-Windows-GPU.zip
+          files: |
+            Neuclip-Studio-Windows-GPU-Setup.exe
+            Neuclip-Studio-Windows-GPU.zip
           draft: true
           name: "Neuclip Studio ${{ github.ref_name }}"

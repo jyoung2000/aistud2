@@ -62,6 +62,28 @@ app.add_middleware(
 )
 
 
+@app.get("/bootstrap")
+def bootstrap() -> dict:
+    """One-shot startup payload: a .neuclip project double-clicked via the installer's
+    file association (desktop.py stashes its path in NEUCLIP_OPEN_PROJECT). The UI calls
+    this once after connecting and opens the project. Consumed on first read so a page
+    reload doesn't re-open it over newer work."""
+    path = os.environ.pop("NEUCLIP_OPEN_PROJECT", None)
+    if not path:
+        return {"project": None}
+    try:
+        import base64 as _b64
+        from pathlib import Path as _P
+
+        p = _P(path)
+        if not p.is_file() or p.suffix.lower() != ".neuclip" or p.stat().st_size > 512_000_000:
+            return {"project": None}
+        return {"project": {"name": p.name, "data_b64": _b64.b64encode(p.read_bytes()).decode()}}
+    except Exception as e:
+        print(f"[bootstrap] couldn't read project: {e}")
+        return {"project": None}
+
+
 @app.get("/health")
 def health() -> dict:
     d = detect_device()

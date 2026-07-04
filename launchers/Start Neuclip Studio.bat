@@ -79,6 +79,16 @@ if not exist "%REPO%\sidecar\.venv" (
   python -m venv "%REPO%\sidecar\.venv" || goto :fail
 )
 set "VENV_PY=%REPO%\sidecar\.venv\Scripts\python.exe"
+REM repair a venv that exists without pip (Pythons missing ensurepip create these)
+"%VENV_PY%" -m pip --version >nul 2>&1
+if errorlevel 1 "%VENV_PY%" -m ensurepip --upgrade --default-pip >nul 2>&1
+"%VENV_PY%" -m pip --version >nul 2>&1
+if errorlevel 1 (
+  echo Recreating Python environment ^(pip missing^)...
+  rmdir /s /q "%REPO%\sidecar\.venv"
+  python -m venv "%REPO%\sidecar\.venv" || goto :fail
+  "%VENV_PY%" -m ensurepip --upgrade --default-pip >nul 2>&1
+)
 echo Installing sidecar dependencies...
 "%VENV_PY%" -m pip install --quiet --upgrade pip
 "%VENV_PY%" -m pip install --quiet -r "%REPO%\sidecar\requirements.txt" pyinstaller || goto :fail
